@@ -1,33 +1,21 @@
-# Detech-QA-from-ExerSheetPDF
+# Detect Question forms from pdf
  
 ![fig](./assets/overview.png)
 
-- detect question from scanned pdf file into text
+- Example for each module -> [read](notebook/README.md)
 
-## Steps:
 
-1. Element Detection
-* I assume that an exam paper is built by 8 main components:
+## Modules
+1. Detection
 
-	- heading
-	- question
-	- subquestion
-	- auxillary_text
-	- choice
-	- blank
-	- image
-	- table
+- Evironment :
 
-* Basicly, I can utilize Yolo to detect them. To train yolo, reading the [training-yolo.ipynb](training-yolo.ipynb)
-* Note: dataset, model I used in .ipynb files are linked to my drive, therefore u should change the paths in all files.
+```python
+!pip install ultralytics #for Yolov8
+!pip install opencv-python
+!pip install torch
+```
 
-2. OCR
 
-- after receiving detection results, we can apply ocr model on them. 
-- In this work, for math formulas, I recomand use mathpix ocr api.
-
-3. Post processing
-
-- because I detect seperately elements, so I need to group elements belonging to same question. 
-for more, read [Pipeline](Pipeline_YOLOxMathPix.ipynb)
+## Deploy
 				
