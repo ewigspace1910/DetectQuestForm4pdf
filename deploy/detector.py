@@ -2,10 +2,15 @@
 from ultralytics import YOLO
 import multiprocessing as mp
 import json
-# import cv2
-import numpy as np
+import cv2
 import io
 import requests
+import boto3
+import cloudinary
+import cloudinary.uploader as CryUploader
+from botocore.exceptions import NoCredentialsError
+import time
+import random
 
 # CONSTANTs
 CATEGORY_MAP = {
@@ -29,27 +34,35 @@ CATEGORY_LEVEL = {
     "auxillary_text"   : 0
 }
 REVERSE_MAP = {CATEGORY_MAP[k]:k for k in CATEGORY_MAP}
-
 class Config:
     def __init__(self):
         
         #matpix
-        self.matpix_id = ""
-        self.matpix_key = ""
-        
-        #model
+
+        # self.matpix_id = ""
+        # self.matpix_key = ""
+
+        #storage
+        self.s3_id = "AKIA6G3Z3Q57HIN3JMUA"
+        self.s3_key = "WyvSJXF2LsZYh4WIOcgf9xXQw8BFgSjFKbsonPZv"
+        self.s3_bucket_name = "smartjen"
+
+
+        # self.cloudinary_name = ""
+        # self.cloudinary_key = ""
+        # self.cloudinary_api_secret = ""
+
+
+        #detection model
         self.model_type = "yolov8"
         self.weight_path = "deploy/model/yolov8.pt"
 
         #parallel
         self.n_processes = 4
 
-    
-##############################
-##
-## element modules
-##############################
-#yolov8
+################################################
+#               RESQUEST
+#################################################
 def infer_yolov8(source, model):
     """
     source:  could be image, path,... 
@@ -58,9 +71,7 @@ def infer_yolov8(source, model):
     detection_results = model.predict(source, save=False, imgsz=(640, 640), conf=0.45, device="cpu")
     return detection_results
 
-
-#mathpix ocr function
-def mathpix_ocrrequest(io_buffer, app_id="", app_key=""):
+def request2mathpix(io_buffer, app_id="", app_key=""):
     try:
         r = requests.post("https://api.mathpix.com/v3/text",
             files={"file": io_buffer},
@@ -84,12 +95,15 @@ def mathpix_ocrrequest(io_buffer, app_id="", app_key=""):
         print("Mathpix_ocr_requestion got error :", e)
         return "???"
 
-def save_image(img):
-    name = "linkimage.png"
-    #save image and getlink
-    # cv2.imwrite(name, img)
-    return name
-
+def request2cloudinary(file, name, key, api_secret):
+    try:
+        cloudinary.config(cloud_name = name, api_key = key, api_secret = api_secret, secure = True)
+        r = CryUploader.upload(file, format="png")
+        return r['url']
+    except Exception as e:
+        print("cloudary_error", e)
+        return ""
+        
 #########################################
 ### 
 ##       PIPELINE
@@ -99,91 +113,103 @@ def get_detector():
     detector = Detector(configs=Config())
     return detector
 
-def subprocess_ocr_request(boxes, orig_imgs, app_id, app_key, conn):
+def subprocess_ocr_request(inputs):
     """
-    boxes: (page index, detectedbox) list from yolov8 results
-    orgin_img : (numpy array): original imaege
-    conn     : multiprocessing Pipe to receive results 
+    "inputs" contains:
+        page_index  : index of page containing box
+        box         : detectedbox list from yolov8 results
+        cropped_image : (numpy array): original imaege
+        app_id, app_key
     """
-    objs =[]
-    for page_index, box in boxes:
-        cls = REVERSE_MAP[int(box.cls)]
-        bb = box.xyxy[0].numpy()
-        cropped_image = orig_imgs[page_index].orig_img[int(bb[1]): int(bb[3]), int(bb[0]): int(bb[2])]
-        text = ""
-        if cls in ["image", "table"]: #save image/table
-            text = save_image(cropped_image)
-        else:
-            io_buffer = io.BytesIO()
-            np.save(io_buffer, cropped_image)
-            io_buffer.seek(0)
-            text = mathpix_ocrrequest(io_buffer=io_buffer, app_id= app_id, app_key=app_key)
+    page_index, box, cropped_image, mathpix_id, mathpix_key, cry_name,  cry_key, cry_id= inputs
 
-        obj = {"name":cls, 
-                "text": text,
-                'child':[], 
-                "idx": (page_index, int(box.xyxy[0][1]))} #(page number, y-position)
-        objs += [obj]
+    cls = REVERSE_MAP[int(box.cls)]
+    _, buffer = cv2.imencode(".png", cropped_image)
+    io_buffer = io.BytesIO(buffer)
+    io_buffer.seek(0)
+    if cls in ["image", "table"]: 
+        text = request2cloudinary(file=io_buffer, name=cry_name, key=cry_key, api_secret=cry_id)
+    else: 
+        text = request2mathpix(io_buffer=io_buffer, app_id=mathpix_id, app_key=mathpix_key)
 
-    conn.send(objs)
-    conn.close()
+    obj = { "name":cls, 
+            "title": text,
+            "stimulus": [], #save image/table
+            "prompt" : "", #auxilary_text
+            'choices': "", 
+            "subquestions": [],
+            "category": "OEQ",
+            "idx": (page_index, int(box.xyxy[0][1]))}
+
+    return obj
+
 
 class Detector(object):
     def __init__(self, configs:Config):
-        self.infer_func = self.model = None
         self.cfg = configs
+        # self.s3 = boto3.client('s3', aws_access_key_id=self.cfg.s3_id, aws_secret_access_key=self.cfg.s3_key)
 
         if self.cfg.model_type == "yolov8":
             self.model = YOLO(self.cfg.weight_path)
             self.infer_func = infer_yolov8
-
-    def infer(self, inputs):
+    
+    def infer(self, inputs): 
         """
-        inputs: upload file from http requestion
-
-        Return --> list(dict) : list of question objects with their child elements
+        This function takes inputs, performs object detection on them, extracts text from the detected
+        objects, and groups the extracted text into questions.
+        
+        :param inputs: The input data for the inference process. It is passed to the `infer_func` method
+        along with the model to obtain detection results
+        :return: a list of dictionaries, where each dictionary represents an element detected in the
+        input image(s) and contains information such as the element's name (e.g. "image", "table",
+        "heading"), text (if applicable), and its position in the image(s). The elements are sorted by
+        their position and grouped into categories (e.g. headings, paragraphs, images) based on
         """
-        #Prediction
         detection_results = self.infer_func(source=inputs, model=self.model)
 
         elements = []
-        orders   = []
-        for i, result in enumerate(detection_results):
-            for bidx, box in enumerate(result.boxes):
+        for page_index, result in enumerate(detection_results):
+            for box in result.boxes:
                 cls = REVERSE_MAP[int(box.cls)]
                 bb = box.xyxy[0].numpy()
-                cropped_image = detection_results[i].orig_img[int(bb[1]): int(bb[3]), int(bb[0]): int(bb[2])]
+                cropped_image = detection_results[page_index].orig_img[int(bb[1]): int(bb[3]), int(bb[0]): int(bb[2])]
                 text = ""
-                if cls in ["image", "table"]: #save image/table
-                    text = save_image(cropped_image)
-                else: #OCR on text only: question, subquestion, choice(text), blank, auxillary_text
-                    # _, buffer = cv2.imencode(".png", cropped_image)
-                    # io_buffer = io.BytesIO(buffer)
-                    io_buffer = io.BytesIO()
-                    np.save(io_buffer, cropped_image)
-                    io_buffer.seek(0)
-                    text = mathpix_ocrrequest(io_buffer=io_buffer, app_id=self.cfg.matpix_id, app_key=self.cfg.matpix_key)
-
-                obj = {"name":cls, 
-                        "text": text,
-                    'child':[], 
-                    "idx": (i, int(box.xyxy[0][1]))} #(page number, y-position)
+                _, buffer = cv2.imencode(".png", cropped_image)
+                io_buffer = io.BytesIO(buffer)
+                io_buffer.seek(0)
+                if cls in ["image", "table"]: 
+                    # text = self.__upload_file_s3(bucket_name=self.cfg.s3_bucket_name, file=io_buffer)
+                    text = request2cloudinary(file=io_buffer, name=self.cfg.cloudinary_name, key=self.cfg.cloudinary_key, api_secret=self.cfg.cloudinary_api_secret)
+                else: 
+                    text = request2mathpix(io_buffer=io_buffer, app_id=self.cfg.matpix_id, app_key=self.cfg.matpix_key)
+                obj = { "name":cls, 
+                        "title": text,
+                        "stimulus": [], #save image/table
+                        "prompt" : "", #auxilary_text
+                        'choices': "", 
+                        "subquestions": [],
+                        "category": "OEQ",
+                        "idx": (page_index, int(box.xyxy[0][1]))}
                 elements += [obj]
-                
+        #Postprocessing
         elements = sorted(elements, key=lambda x: x["idx"])
         orders = [CATEGORY_LEVEL[obj['name']] for obj in elements]
         if orders[0] < 3:
             orders = [3] + orders
             elements = [{"name":'heading', 
-                        "text": "Exam Questions",
-                    'child':[], 
-                    "idx": (0, 0)}] + elements
+                        "title": "Section - 1 ",
+                        "stimulus": [], #save image/table
+                        "prompt" : "", #auxilary_text
+                        'choices': "", 
+                        "subquestions": [],
+                        "category": "OEQ", 
+                        "idx": (0, 0)}] + elements
         
-        #GROUP detected elements to questions.
         questions = self.__group_element(orders, elements)
+        return questions
+        
 
-        return questions #convert to Json???/
-    
+    # @profile
     def infer_parallel(self, inputs):
         """
         inputs: upload file from http requestion
@@ -193,38 +219,33 @@ class Detector(object):
         #Prediction
         detection_results = self.infer_func(source=inputs, model=self.model)
 
-        #OCR
-        processes = [] 
-        parent_connections = []
-        boxes = [(page_index, box) for page_index, results in enumerate(detection_results) for box in results.boxes]
-        elements_per_process = len(boxes) // (self.cfg.n_processes)
-        boxes = [boxes[i:i+ elements_per_process] for i in range(0, len(boxes), elements_per_process)]
-        for b in boxes:
-            parent_conn, child_conn = mp.Pipe()
-            process = mp.Process(target=subprocess_ocr_request, args=(b, detection_results, self.cfg.matpix_id, self.cfg.matpix_key ,
-                                                                    child_conn, ))
-            process.start()
-            processes += [process]
-            parent_connections += [parent_conn]
 
-        # for p in processes: p.start()
-        for p in processes: p.join()
-        
-        elements = [obj for parent_connection in parent_connections for obj in parent_connection.recv()]
+        #OCR
+        with mp.Pool(processes=self.cfg.n_processes) as pool:
+            elements = pool.map(subprocess_ocr_request, 
+                            [(page_index, box,
+                            detection_results[page_index].orig_img[int(box.xyxy[0][1]): int(box.xyxy[0][3]), int(box.xyxy[0][0]): int(box.xyxy[0][2])],
+                            self.cfg.matpix_id, self.cfg.matpix_key,
+                            self.cfg.cloudinary_name, self.cfg.cloudinary_key, self.cfg.cloudinary_api_secret) for page_index, results in enumerate(detection_results) for box in results.boxes])
+                            
+
         #Postprocesing
         elements = sorted(elements, key=lambda x: x["idx"])
         orders = [CATEGORY_LEVEL[obj['name']] for obj in elements]
         if orders[0] < 3:
             orders = [3] + orders
             elements = [{"name":'heading', 
-                        "text": "Exam Questions",
-                        'child':[], 
+                        "title": "Section - 1 ",
+                        "stimulus": [], #save image/table
+                        "prompt" : "", #auxilary_text
+                        'choices': "", 
+                        "subquestions": [],
+                        "category": "OEQ", 
                         "idx": (0, 0)}] + elements
-        
-        #GROUP detected elements to questions.
         questions = self.__group_element(orders, elements)
 
-        return questions #convert to Json???/
+        return questions 
+
 
     def __group_element(self, orders, elements):
         """Args:
@@ -267,7 +288,25 @@ class Detector(object):
                     new_arr_2_e += [new_arr_e[i]]
                 else:
                     for j in new_arr_e[i]:
-                        elements[new_arr_e[i-1]]["child"] += [ elements[j] ] 
+                        
+                        if elements[j]["name"] in ("image", "table"):
+                            elements[new_arr_e[i-1]]["stimulus"] += [ elements[j]['title'] ] 
+                        elif elements[j]["name"] in ("auxillary_text"):
+                            elements[new_arr_e[i-1]]["prompt"] += f"\n{elements[j]['title']}"
+
+                        elif elements[j]["name"] in ("blank"):
+                            elements[new_arr_e[i-1]]["prompt"] += f"\n\n{elements[j]['title']}\n"
+                            elements[new_arr_e[i-1]]["category"] = "OEQ"
+
+                        elif elements[j]["name"] in ("choice"):
+                            elements[new_arr_e[i-1]]["choices"] += f"\n{elements[j]['title']}"
+                            elements[new_arr_e[i-1]]["category"] = "MCQ"
+
+                        elif elements[j]["name"] in ("subquestion", "question"):
+                            elements[new_arr_e[i-1]]["subquestions"] += [ elements[j] ]
+                            elements[new_arr_e[i-1]]["category"] = "SQ"
+                        else: pass
+                        # elements[new_arr_e[i-1]]["child"] += [ elements[j] ] 
                 i += 1
 
             new_arr_2_e = [elements[i] for i in new_arr_2_e]
@@ -279,6 +318,20 @@ class Detector(object):
         while len(set(o)) > 1:
             o, e = __combine_min_elements(o,e)
         return e
+
+    def __upload_file_s3(self, bucket_name, file):
+        file_name = time.strftime("%Y%m%d-%H%M%S") + "-" + str(random.randint(1000, 9999)) + ".png"
+        try:
+            self.s3.upload_fileobj(file, bucket_name, file_name) #upload to s3.
+            text = "http://{}.s3.amazonaws.com/{}".format(self.cfg.s3_bucket_name, file_name)
+            return text
+        except FileNotFoundError:
+            print("The file was not found")
+            return ""
+        except NoCredentialsError:
+            print("Credentials not available")
+            return ""
+
 
 
 

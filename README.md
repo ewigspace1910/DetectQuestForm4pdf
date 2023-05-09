@@ -8,9 +8,7 @@
 - Evironment :
 
 ```python
-!pip install ultralytics #for Yolov8
-!pip install opencv-python
-!pip install torch
+pip install -r requirements.txt
 ```
 
 ## Training
@@ -19,6 +17,9 @@
 
 
 ## Deploy
+- Analysize execution time with (line-profiler)[https://github.com/pyutils/line_profiler]
+  - kernprof -lv .\deploy\test\test.py
+
 - Create Restful API by fastAPI
   - run server
     ```python
@@ -32,5 +33,5 @@
 
 - Deploy on AWS Lambda [tutorial](https://youtu.be/VYk3lwZbHBU)
   - login to aws
-  - build docker : ```docker build -t test_layout_analysis ``` 
-  - put on aws  
+  - build docker : ```docker build -t test_layout_analysis -f Dockerfile.aws.lambda ``` 
+  - put on aws est  

@@ -1,19 +1,19 @@
-FROM public.ecr.aws/lambda/python:3.10
-# FROM ubuntu:22.10
+FROM python:3.8
 
-WORKDIR ${LAMBDA_TASK_ROOT}
+RUN mkdir -p /app
+RUN mkdir -p /app/tmp
+WORKDIR /app 
 
-# RUN apt-get update &&  apt-get install  
-# RUN yum install -y ffmpeg libsm6 libxext6 
+RUN apt-get update && apt-get install ffmpeg libsm6 libxext6  -y
 
-COPY ./deploy ./deploy
+#setup folder
+COPY ./deploy        ./deploy
+COPY ./deploy/app.py .
 
 # initialize environment
-COPY ./requirements.txt requirements.txt 
-RUN pip install -r requirements.txt --target "${LAMBDA_TASK_ROOT}" --no-cache
-RUN pip uninstall opencv-python
-RUN pip install opencv-python-headless --target "${LAMBDA_TASK_ROOT}" --no-cache
+RUN pip install awslambdaric
+COPY ./requirements.txt ./requirements.txt 
+RUN pip install -r ./requirements.txt --no-cache
 
-
-COPY ./deploy/app.py ${LAMBDA_TASK_ROOT}
+ENTRYPOINT [ "python", "-m", "awslambdaric" ]
 CMD ["app.handler"]

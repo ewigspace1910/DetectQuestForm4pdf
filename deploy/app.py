@@ -4,8 +4,8 @@ import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 
-# from deploy.routers import router_analysis, router_tmp
-from routers import router_analysis, router_tmp
+# from deploy.routers import router_analysis
+from routers import router_analysis
 
 app=FastAPI()
 
@@ -20,7 +20,6 @@ async def root():
     return {"message": "/docs to read API documents"}
 
 app.include_router(router_analysis)
-app.include_router(router_tmp)
 
 ###############################################################################
 #   Handler for AWS Lambda                                                    #
