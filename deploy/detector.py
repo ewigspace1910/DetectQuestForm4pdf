@@ -1,6 +1,7 @@
 #Thirst Library
 from ultralytics import YOLO
-import multiprocessing as mp
+import lambda_multiprocessing as mp
+# import multiprocessing as mp
 import json
 import cv2
 import io
@@ -38,19 +39,18 @@ class Config:
     def __init__(self):
         
         #matpix
+        self.matpix_id = ""
+        self.matpix_key = ""
 
-        # self.matpix_id = ""
-        # self.matpix_key = ""
 
         #storage
-        self.s3_id = "AKIA6G3Z3Q57HIN3JMUA"
-        self.s3_key = "WyvSJXF2LsZYh4WIOcgf9xXQw8BFgSjFKbsonPZv"
-        self.s3_bucket_name = "smartjen"
+        self.s3_id = ""
+        self.s3_key = ""
+        self.s3_bucket_name = ""
 
-
-        # self.cloudinary_name = ""
-        # self.cloudinary_key = ""
-        # self.cloudinary_api_secret = ""
+        self.cloudinary_name = ""
+        self.cloudinary_key = ""
+        self.cloudinary_api_secret = ""
 
 
         #detection model

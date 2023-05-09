@@ -4,11 +4,11 @@ mangum
 uvicorn
 urllib3==1.25.11
 requests==2.23.0
-opencv-python==4.7.0 
-ultralytics==8.1.0
+ultralytics==8.0.91
 pyMuPDF
 python-multipart
 boto3      #for s3 buckage 
 cloudinary #for cloud storage
+lambda-multiprocessing==0.3
 
 
