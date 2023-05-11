@@ -1,5 +1,5 @@
 from fastapi.responses import JSONResponse
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, UploadFile, FastAPI
 import fitz
 import os
 import time
@@ -7,8 +7,10 @@ from typing import List
 from PIL import Image
 import io
 
-# from deploy.detector import get_detector, Config, CATEGORY_MAP
-from detector import get_detector, Config, CATEGORY_MAP
+from deploy.detector import get_detector, CATEGORY_MAP
+# from detector import get_detector,  CATEGORY_MAP
+
+DETECTOR = get_detector()
 
 router_analysis = APIRouter(
     prefix="/analysis",
@@ -17,7 +19,6 @@ router_analysis = APIRouter(
 
 @router_analysis.get("/labels")
 def get_info_api():
-    cfg = Config()
     return JSONResponse({
         "CATEGORY_MAP" : CATEGORY_MAP
     })
@@ -69,26 +70,57 @@ def get_info_api():
 @router_analysis.post("/layout")
 async def post_imgs(images:List[UploadFile]=File(...)):
     tstart = time.time()
-    layout = {}
     try:
         objs = []
         for img in images:
             contents = await img.read()
             objs += [Image.open(io.BytesIO(contents))]
 
-        Detector =  get_detector()
-        # layout = Detector.infer(objs)
-        layout = Detector.infer_parallel(objs)
+        Detector =  DETECTOR
+        layout = Detector.infer(objs)
 
-        return JSONResponse({
+        res = JSONResponse({
             "status": "success",
             "data": layout,
             "excution time" : time.time() - tstart
         })
+        return res
     except Exception as e:
+        print(e)
         return JSONResponse({
             "status": "false",
             "data": {},
             "excution time" : time.time() - tstart,
             "error": e
         })
+
+@router_analysis.post("/layout/speedup")
+async def post_imgs_parallel(images:List[UploadFile]=File(...)):
+    tstart = time.time()
+    try:
+        objs = []
+        for img in images:
+            contents = await img.read()
+            objs += [Image.open(io.BytesIO(contents))]
+
+        Detector =  Detector =  DETECTOR
+        # layout = Detector.infer_parallel(objs)
+        layout = Detector.infer_concurrent(objs)
+
+        res = JSONResponse({
+            "status": "success",
+            "data": layout,
+            "excution time" : time.time() - tstart
+        })
+        return res
+    except Exception as e:
+        print(e)
+        return JSONResponse({
+            "status": "false",
+            "data": {},
+            "excution time" : time.time() - tstart,
+            "error": e
+        })
+    
+
+    

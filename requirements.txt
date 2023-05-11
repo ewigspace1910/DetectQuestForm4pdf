@@ -9,6 +9,3 @@ pyMuPDF
 python-multipart
 boto3      #for s3 buckage 
 cloudinary #for cloud storage
-lambda-multiprocessing==0.3
-
-

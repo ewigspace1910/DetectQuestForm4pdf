@@ -1,7 +1,6 @@
 #Thirst Library
 from ultralytics import YOLO
-import lambda_multiprocessing as mp
-# import multiprocessing as mp
+import multiprocessing as mp
 import json
 import cv2
 import io
@@ -12,6 +11,7 @@ import cloudinary.uploader as CryUploader
 from botocore.exceptions import NoCredentialsError
 import time
 import random
+import concurrent.futures
 
 # CONSTANTs
 CATEGORY_MAP = {
@@ -50,7 +50,7 @@ class Config:
 
         self.cloudinary_name = ""
         self.cloudinary_key = ""
-        self.cloudinary_api_secret = ""
+        self.cloudinary_api_secret = "dhvcDtRatChtiNr021XALeBPWU0"
 
 
         #detection model
@@ -58,7 +58,7 @@ class Config:
         self.weight_path = "deploy/model/yolov8.pt"
 
         #parallel
-        self.n_processes = 4
+        self.n_processes = 2 #for aws
 
 ################################################
 #               RESQUEST
@@ -113,7 +113,8 @@ def get_detector():
     detector = Detector(configs=Config())
     return detector
 
-def subprocess_ocr_request(inputs):
+# @profile
+def subprocess_ocr_request(page_index, box, cropped_image, mathpix_id, mathpix_key, cry_name,  cry_key, cry_id):
     """
     "inputs" contains:
         page_index  : index of page containing box
@@ -121,8 +122,6 @@ def subprocess_ocr_request(inputs):
         cropped_image : (numpy array): original imaege
         app_id, app_key
     """
-    page_index, box, cropped_image, mathpix_id, mathpix_key, cry_name,  cry_key, cry_id= inputs
-
     cls = REVERSE_MAP[int(box.cls)]
     _, buffer = cv2.imencode(".png", cropped_image)
     io_buffer = io.BytesIO(buffer)
@@ -134,14 +133,38 @@ def subprocess_ocr_request(inputs):
 
     obj = { "name":cls, 
             "title": text,
-            "stimulus": [], #save image/table
+            "stimulus": "", #save image/table
             "prompt" : "", #auxilary_text
-            'choices': "", 
-            "subquestions": [],
             "category": "OEQ",
             "idx": (page_index, int(box.xyxy[0][1]))}
-
     return obj
+  
+def subprocess_ocr_request_aws(page_index, box, cropped_image, mathpix_id, mathpix_key, cry_name,  cry_key, cry_id, conn):
+    """
+    "inputs" contains:
+        page_index  : index of page containing box
+        box         : detectedbox list from yolov8 results
+        cropped_image : (numpy array): original imaege
+        app_id, app_key
+    """
+    cls = REVERSE_MAP[int(box.cls)]
+    _, buffer = cv2.imencode(".png", cropped_image)
+    io_buffer = io.BytesIO(buffer)
+    io_buffer.seek(0)
+    if cls in ["image", "table"]: 
+        text = request2cloudinary(file=io_buffer, name=cry_name, key=cry_key, api_secret=cry_id)
+    else: 
+        text = request2mathpix(io_buffer=io_buffer, app_id=mathpix_id, app_key=mathpix_key)
+
+    obj = { "name":cls, 
+            "title": text,
+            "stimulus": "", #save image/table
+            "prompt" : "", #auxilary_text
+            "category": "OEQ",
+            "idx": (page_index, int(box.xyxy[0][1]))}
+    
+    conn.send(obj)
+    conn.close()
 
 
 class Detector(object):
@@ -153,6 +176,10 @@ class Detector(object):
             self.model = YOLO(self.cfg.weight_path)
             self.infer_func = infer_yolov8
     
+    def ready(self):
+        return str(type(self.model))
+
+    # @profile
     def infer(self, inputs): 
         """
         This function takes inputs, performs object detection on them, extracts text from the detected
@@ -165,51 +192,26 @@ class Detector(object):
         "heading"), text (if applicable), and its position in the image(s). The elements are sorted by
         their position and grouped into categories (e.g. headings, paragraphs, images) based on
         """
+        #DETECTION
         detection_results = self.infer_func(source=inputs, model=self.model)
 
+        #OCR
         elements = []
         for page_index, result in enumerate(detection_results):
             for box in result.boxes:
-                cls = REVERSE_MAP[int(box.cls)]
-                bb = box.xyxy[0].numpy()
-                cropped_image = detection_results[page_index].orig_img[int(bb[1]): int(bb[3]), int(bb[0]): int(bb[2])]
-                text = ""
-                _, buffer = cv2.imencode(".png", cropped_image)
-                io_buffer = io.BytesIO(buffer)
-                io_buffer.seek(0)
-                if cls in ["image", "table"]: 
-                    # text = self.__upload_file_s3(bucket_name=self.cfg.s3_bucket_name, file=io_buffer)
-                    text = request2cloudinary(file=io_buffer, name=self.cfg.cloudinary_name, key=self.cfg.cloudinary_key, api_secret=self.cfg.cloudinary_api_secret)
-                else: 
-                    text = request2mathpix(io_buffer=io_buffer, app_id=self.cfg.matpix_id, app_key=self.cfg.matpix_key)
-                obj = { "name":cls, 
-                        "title": text,
-                        "stimulus": [], #save image/table
-                        "prompt" : "", #auxilary_text
-                        'choices': "", 
-                        "subquestions": [],
-                        "category": "OEQ",
-                        "idx": (page_index, int(box.xyxy[0][1]))}
+                obj = subprocess_ocr_request(page_index, box,
+                            detection_results[page_index].orig_img[int(box.xyxy[0][1]): int(box.xyxy[0][3]), int(box.xyxy[0][0]): int(box.xyxy[0][2])],
+                            self.cfg.matpix_id, self.cfg.matpix_key,
+                            self.cfg.cloudinary_name, self.cfg.cloudinary_key, self.cfg.cloudinary_api_secret)
                 elements += [obj]
+
         #Postprocessing
         elements = sorted(elements, key=lambda x: x["idx"])
-        orders = [CATEGORY_LEVEL[obj['name']] for obj in elements]
-        if orders[0] < 3:
-            orders = [3] + orders
-            elements = [{"name":'heading', 
-                        "title": "Section - 1 ",
-                        "stimulus": [], #save image/table
-                        "prompt" : "", #auxilary_text
-                        'choices': "", 
-                        "subquestions": [],
-                        "category": "OEQ", 
-                        "idx": (0, 0)}] + elements
-        
+        orders = [CATEGORY_LEVEL[obj['name']] for obj in elements]        
         questions = self.__group_element(orders, elements)
         return questions
         
 
-    # @profile
     def infer_parallel(self, inputs):
         """
         inputs: upload file from http requestion
@@ -221,30 +223,52 @@ class Detector(object):
 
 
         #OCR
-        with mp.Pool(processes=self.cfg.n_processes) as pool:
-            elements = pool.map(subprocess_ocr_request, 
+        with mp.Pool(processes=self.cfg.n_processes) as executor:
+            elements = executor.starmap(subprocess_ocr_request, 
                             [(page_index, box,
                             detection_results[page_index].orig_img[int(box.xyxy[0][1]): int(box.xyxy[0][3]), int(box.xyxy[0][0]): int(box.xyxy[0][2])],
                             self.cfg.matpix_id, self.cfg.matpix_key,
                             self.cfg.cloudinary_name, self.cfg.cloudinary_key, self.cfg.cloudinary_api_secret) for page_index, results in enumerate(detection_results) for box in results.boxes])
                             
+        #Postprocesing
+        elements = sorted(elements, key=lambda x: x["idx"])
+        orders = [CATEGORY_LEVEL[obj['name']] for obj in elements]
+        questions = self.__group_element(orders, elements)
+        return questions 
+    
+    # @profile
+    def infer_concurrent(self, inputs):
+        """
+        inputs: upload file from http requestion
+
+        Return --> list(dict) : list of question objects with their child elements
+        """
+        #Prediction
+        detection_results = self.infer_func(source=inputs, model=self.model)
+
+        #OCR                      
+        parent_connections = []
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for page_index, results in enumerate(detection_results):
+                for box in results.boxes:
+                    parent_conn, child_conn = mp.Pipe()
+                    parent_connections += [parent_conn]
+                            
+                    executor.submit(subprocess_ocr_request_aws, page_index, box,
+                                detection_results[page_index].orig_img[int(box.xyxy[0][1]): int(box.xyxy[0][3]), int(box.xyxy[0][0]): int(box.xyxy[0][2])],
+                                self.cfg.matpix_id, self.cfg.matpix_key,
+                                self.cfg.cloudinary_name, self.cfg.cloudinary_key, self.cfg.cloudinary_api_secret,
+                                child_conn)
+        elements = []
+        for parent_connection in parent_connections:
+            elements += [parent_connection.recv()]
 
         #Postprocesing
         elements = sorted(elements, key=lambda x: x["idx"])
         orders = [CATEGORY_LEVEL[obj['name']] for obj in elements]
-        if orders[0] < 3:
-            orders = [3] + orders
-            elements = [{"name":'heading', 
-                        "title": "Section - 1 ",
-                        "stimulus": [], #save image/table
-                        "prompt" : "", #auxilary_text
-                        'choices': "", 
-                        "subquestions": [],
-                        "category": "OEQ", 
-                        "idx": (0, 0)}] + elements
         questions = self.__group_element(orders, elements)
 
-        return questions 
+        return questions     
 
 
     def __group_element(self, orders, elements):
@@ -290,20 +314,24 @@ class Detector(object):
                     for j in new_arr_e[i]:
                         
                         if elements[j]["name"] in ("image", "table"):
-                            elements[new_arr_e[i-1]]["stimulus"] += [ elements[j]['title'] ] 
+                            elements[new_arr_e[i-1]]["stimulus"] += f"\n{elements[j]['title']}\t" 
                         elif elements[j]["name"] in ("auxillary_text"):
                             elements[new_arr_e[i-1]]["prompt"] += f"\n{elements[j]['title']}"
 
                         elif elements[j]["name"] in ("blank"):
-                            elements[new_arr_e[i-1]]["prompt"] += f"\n\n{elements[j]['title']}\n"
+                            elements[new_arr_e[i-1]]["prompt"] += f"\n{elements[j]['title']}\n"
                             elements[new_arr_e[i-1]]["category"] = "OEQ"
 
                         elif elements[j]["name"] in ("choice"):
-                            elements[new_arr_e[i-1]]["choices"] += f"\n{elements[j]['title']}"
+                            if "choices" in elements[new_arr_e[i-1]].keys():
+                                elements[new_arr_e[i-1]]["choices"] += f"\n{elements[j]['title']}"
+                            else: elements[new_arr_e[i-1]]["choices"] = f"\n{elements[j]['title']}"
                             elements[new_arr_e[i-1]]["category"] = "MCQ"
 
                         elif elements[j]["name"] in ("subquestion", "question"):
-                            elements[new_arr_e[i-1]]["subquestions"] += [ elements[j] ]
+                            if "subquestions" in elements[new_arr_e[i-1]].keys():
+                                elements[new_arr_e[i-1]]["subquestions"] += [ elements[j] ]
+                            else: elements[new_arr_e[i-1]]["subquestions"] = [ elements[j] ]
                             elements[new_arr_e[i-1]]["category"] = "SQ"
                         else: pass
                         # elements[new_arr_e[i-1]]["child"] += [ elements[j] ] 
@@ -314,6 +342,14 @@ class Detector(object):
             return new_arr_2, new_arr_2_e
 
         #run
+        if orders[0] < 3:
+            orders = [3] + orders
+            elements = [{"name":'heading', 
+                        "title": "Section - 1 ",
+                        "stimulus": "", #save image/table
+                        "prompt" : "", #auxilary_text
+                        "category": "SQ", 
+                        "idx": (0, 0)}] + elements
         o, e = orders, elements
         while len(set(o)) > 1:
             o, e = __combine_min_elements(o,e)

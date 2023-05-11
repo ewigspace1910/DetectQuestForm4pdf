@@ -1,11 +1,11 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 
-# from deploy.routers import router_analysis
-from routers import router_analysis
+from deploy.routers import router_analysis, DETECTOR
+# from routers import router_analysis, DETECTOR
 
 app=FastAPI()
 
@@ -16,8 +16,10 @@ app=FastAPI()
 ###############################################################################
 
 @app.get("/")
-async def root():
-    return {"message": "/docs to read API documents"}
+async def root(request: Request):
+    return {"message":  f"experiment API in: {str(request.url)}docs",
+            "Machine configs-CPU": os.cpu_count(),
+            "Model ready!": DETECTOR.ready()}
 
 app.include_router(router_analysis)
 
