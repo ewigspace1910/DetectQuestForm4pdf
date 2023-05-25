@@ -7,8 +7,9 @@ from typing import List
 from PIL import Image
 import io
 
-from deploy.detector import get_detector, CATEGORY_MAP
-# from detector import get_detector,  CATEGORY_MAP
+# from deploy.detector import get_detector, CATEGORY_MAP
+from detector import get_detector,  CATEGORY_MAP
+# from detector_onnx import get_detector,  CATEGORY_MAP
 
 DETECTOR = get_detector()
 
@@ -41,19 +42,18 @@ def get_info_api():
 #     mat = fitz.Matrix(zoom_x, zoom_y)  
 #     doc = fitz.open(rand_name)
 #     img_list = []
-#     for page in doc:  
+#     for i, page in enumerate(doc):  
 #         pix = page.get_pixmap(matrix=mat) 
 #         iname = f"{rand_name}_{page.number}.png"
 #         pix.save(iname)
 #         img_list.append(iname)
+#         if i == 6: break
 #     doc.close()
     
 #     # detection
-#     try:
-#         Detector =  get_detector()
-#         layout = Detector.infer(img_list)
-#     except Exception as e: 
-#         layout = "DETECTOR GET ERROR!!!!-->" + str(e)
+#     Detector =  DETECTOR
+#     # layout = Detector.infer(img_list)
+#     layout = Detector.infer_concurrent(img_list)
 
 #     # clean tmp files
 #     for x in img_list: os.remove(x)
@@ -74,7 +74,7 @@ async def post_imgs(images:List[UploadFile]=File(...)):
         objs = []
         for img in images:
             contents = await img.read()
-            objs += [Image.open(io.BytesIO(contents))]
+            objs += [Image.open(io.BytesIO(contents)).convert("RGB")]
 
         Detector =  DETECTOR
         layout = Detector.infer(objs)
@@ -101,7 +101,7 @@ async def post_imgs_parallel(images:List[UploadFile]=File(...)):
         objs = []
         for img in images:
             contents = await img.read()
-            objs += [Image.open(io.BytesIO(contents))]
+            objs += [Image.open(io.BytesIO(contents)).convert("RGB")]
 
         Detector =  Detector =  DETECTOR
         # layout = Detector.infer_parallel(objs)

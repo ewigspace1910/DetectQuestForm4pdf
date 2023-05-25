@@ -6,7 +6,6 @@ import cv2
 import io
 import requests
 import boto3
-import os
 import cloudinary
 import cloudinary.uploader as CryUploader
 from botocore.exceptions import NoCredentialsError
@@ -14,6 +13,9 @@ import time
 import random
 import concurrent.futures
 import re
+import onnxruntime
+import cv2.dnn as dnn
+import numpy as np
 
 # CONSTANTs
 CATEGORY_MAP = {
@@ -41,8 +43,8 @@ class Config:
     def __init__(self):
         
         #matpix
-        self.matpix_id = os.getenv("mathpix_id") 
-        self.matpix_key = os.getenv("mathpix_key") 
+        self.matpix_id = "" 
+        self.matpix_key = "" 
 
 
         #storage
@@ -50,14 +52,14 @@ class Config:
         self.s3_key = ""
         self.s3_bucket_name = ""
 
-        self.cloudinary_name = os.getenv("cloudinary_name") 
-        self.cloudinary_key = os.getenv("cloudinary_key") 
-        self.cloudinary_api_secret = os.getenv("cloudinary_api") 
+        self.cloudinary_name = ""
+        self.cloudinary_key = ""
+        self.cloudinary_api_secret = ""
 
 
         #detection model
         self.model_type = "yolov8"
-        self.weight_path = "deploy/model/yolov8x.pt"
+        self.weight_path = "deploy/model/yolov8x.onnx"
 
         #parallel
         self.n_processes = 2 #for aws
@@ -65,12 +67,53 @@ class Config:
 ################################################
 #               RESQUEST
 #################################################
-def infer_yolov8(source, model):
+def infer_onnx(source, model, idx, size=800, confidence=0.5):
     """
     source:  could be image, path,... 
     """
-    detection_results = model.predict(source, save=False, imgsz=(800, 800), conf=0.5, device="cpu")
-    return detection_results
+    original_image= source #np.ndarray = cv2.imread(input_image)
+    [height, width, _] = original_image.shape
+    length = max((height, width))
+    image = np.zeros((length, length, 3), np.uint8)
+    image[0:height, 0:width] = original_image
+    scale = length / size
+
+    blob = cv2.dnn.blobFromImage(image, scalefactor=1 / 255, size=(size, size), swapRB=True)  #change input size as model requiremtns
+    model.setInput(blob)
+    outputs = model.forward()
+
+    outputs = np.array([cv2.transpose(outputs[0])])
+    rows = outputs.shape[1]
+
+    boxes = []
+    scores = []
+    class_ids = []
+
+    for i in range(rows):
+        classes_scores = outputs[0][i][4:]
+        (_, maxScore, _, (_, maxClassIndex)) = cv2.minMaxLoc(classes_scores)
+        if maxScore >= confidence:                                                # change confidence score here
+            box = [
+                outputs[0][i][0] - (0.5 * outputs[0][i][2]), outputs[0][i][1] - (0.5 * outputs[0][i][3]),
+                outputs[0][i][2], outputs[0][i][3]]
+            boxes.append(box)
+            scores.append(maxScore)
+            class_ids.append(maxClassIndex)
+
+    result_boxes = cv2.dnn.NMSBoxes(boxes, scores, confidence, 0.45, 0.5) # score_threshold, score_threshold, score_threshold
+
+    detections = []
+    for i in range(len(result_boxes)):
+        index = result_boxes[i]
+        box = boxes[index] # x, y, w, h
+        box = [round(box[0] * scale), round(box[1] * scale),  round((box[0] + box[2]) * scale), round((box[1] + box[3]) * scale)]
+        detection = {
+            'name': REVERSE_MAP[class_ids[index]],
+            "cropped": original_image[int(box[1]): int(box[3]), int(box[0]): int(box[2])],
+            "page_idx":(idx, int(box[1]+box[3]) // 2)}
+        detections.append(detection)
+    return detections
+
 
 def request2mathpix(io_buffer, app_id="", app_key=""):
     try:
@@ -100,23 +143,12 @@ def request2cloudinary(file, name, key, api_secret):
     try:
         cloudinary.config(cloud_name = name, api_key = key, api_secret = api_secret, secure = True)
         r = CryUploader.upload(file, format="png")
-        return r['url']
+        url = r['url']
+        return url
     except Exception as e:
         print("cloudary_error", e)
         return ""
-
-def request2s3(s3, bucket_name, file, s3_bucket_name):
-    file_name = time.strftime("%Y%m%d-%H%M%S") + "-" + str(random.randint(1000, 9999)) + ".png"
-    try:
-        s3.upload_fileobj(file, bucket_name, file_name) #upload to s3.
-        text = "http://{}.s3.amazonaws.com/{}".format(s3_bucket_name, file_name)
-        return text
-    except FileNotFoundError:
-        print("The file was not found")
-        return ""
-    except NoCredentialsError:
-        print("Credentials not available")
-        return ""       
+        
 #########################################
 ### 
 ##       PIPELINE
@@ -127,7 +159,7 @@ def get_detector():
     return detector
 
 # @profile
-def subprocess_ocr_request(page_index, box, cropped_image, mathpix_id, mathpix_key, cry_name,  cry_key, cry_id):
+def subprocess_ocr_request(box, mathpix_id, mathpix_key, cry_name,  cry_key, cry_id):
     """
     "inputs" contains:
         page_index  : index of page containing box
@@ -135,24 +167,22 @@ def subprocess_ocr_request(page_index, box, cropped_image, mathpix_id, mathpix_k
         cropped_image : (numpy array): original imaege
         app_id, app_key
     """
-    cls = REVERSE_MAP[int(box.cls)]
-    _, buffer = cv2.imencode(".png", cropped_image)
+    _, buffer = cv2.imencode(".png", box["cropped"])
     io_buffer = io.BytesIO(buffer)
     io_buffer.seek(0)
-    if cls in ["image", "table"]: 
+    if box["name"] in ["image", "table"]: 
         text = request2cloudinary(file=io_buffer, name=cry_name, key=cry_key, api_secret=cry_id)
     else: 
         text = request2mathpix(io_buffer=io_buffer, app_id=mathpix_id, app_key=mathpix_key)
-
-    obj = { "name":cls, 
+    obj = { "name":box["name"], 
             "title": text,
             "stimulus": "", #save image/table
             "prompt" : "", #auxilary_text
             "category": "OEQ",
-            "idx": (page_index, int(box.xyxy[0][1]))}
+            "idx": box["page_idx"]}
     return obj
   
-def subprocess_ocr_request_aws(page_index, box, cropped_image, mathpix_id, mathpix_key, cry_name,  cry_key, cry_id, conn):
+def subprocess_ocr_request_aws(box, mathpix_id, mathpix_key, cry_name,  cry_key, cry_id, conn):
     """
     "inputs" contains:
         page_index  : index of page containing box
@@ -160,22 +190,21 @@ def subprocess_ocr_request_aws(page_index, box, cropped_image, mathpix_id, mathp
         cropped_image : (numpy array): original imaege
         app_id, app_key
     """
-    cls = REVERSE_MAP[int(box.cls)]
-    _, buffer = cv2.imencode(".png", cropped_image)
+    _, buffer = cv2.imencode(".png", box["cropped"])
     io_buffer = io.BytesIO(buffer)
     io_buffer.seek(0)
-    if cls in ["image", "table"]: 
+    if box["name"] in ["image", "table"]: 
         text = request2cloudinary(file=io_buffer, name=cry_name, key=cry_key, api_secret=cry_id)
     else: 
         text = request2mathpix(io_buffer=io_buffer, app_id=mathpix_id, app_key=mathpix_key)
 
-    obj = { "name":cls, 
+    obj = { "name":box["name"], 
             "title": text,
             "stimulus": "", #save image/table
             "prompt" : "", #auxilary_text
             "category": "OEQ",
-            "idx": (page_index, int(box.xyxy[0][1]))}
-    
+            "idx": box["page_idx"]}
+
     conn.send(obj)
     conn.close()
 
@@ -183,11 +212,11 @@ def subprocess_ocr_request_aws(page_index, box, cropped_image, mathpix_id, mathp
 class Detector(object):
     def __init__(self, configs:Config):
         self.cfg = configs
-        self.s3 = boto3.client('s3', aws_access_key_id=self.cfg.s3_id, aws_secret_access_key=self.cfg.s3_key)
+        # self.s3 = boto3.client('s3', aws_access_key_id=self.cfg.s3_id, aws_secret_access_key=self.cfg.s3_key)
 
         if self.cfg.model_type == "yolov8":
-            self.model = YOLO(self.cfg.weight_path)
-            self.infer_func = infer_yolov8
+            self.model:dnn.Net = dnn.readNetFromONNX(self.cfg.weight_path)
+            self.infer_func = infer_onnx
     
     def ready(self):
         return str(type(self.model))
@@ -206,17 +235,15 @@ class Detector(object):
         their position and grouped into categories (e.g. headings, paragraphs, images) based on
         """
         #DETECTION
-        detection_results = self.infer_func(source=inputs, model=self.model)
+        detection_results = []
+        for idx, img in enumerate(inputs):
+            detection_results += self.infer_func(source=img, model=self.model, idx=idx)
 
         #OCR
         elements = []
-        for page_index, result in enumerate(detection_results):
-            for box in result.boxes:
-                obj = subprocess_ocr_request(page_index, box,
-                            detection_results[page_index].orig_img[int(box.xyxy[0][1]): int(box.xyxy[0][3]), int(box.xyxy[0][0]): int(box.xyxy[0][2])],
-                            self.cfg.matpix_id, self.cfg.matpix_key,
-                            self.cfg.cloudinary_name, self.cfg.cloudinary_key, self.cfg.cloudinary_api_secret)
-                elements += [obj]
+        for box in detection_results:
+            obj = subprocess_ocr_request(box,self.cfg.matpix_id, self.cfg.matpix_key, self.cfg.cloudinary_name, self.cfg.cloudinary_key, self.cfg.cloudinary_api_secret)
+            elements += [obj]
 
         #Postprocessing
         elements = sorted(elements, key=lambda x: x["idx"])  
@@ -226,26 +253,28 @@ class Detector(object):
     # @profile
     def infer_concurrent(self, inputs):
         """
-        inputs: upload file from http requestion
-
-        Return --> list(dict) : list of question objects with their child elements
+        This function takes inputs, performs object detection on them, extracts text from the detected
+        objects, and groups the extracted text into questions.
+        
+        :param inputs: The input data for the inference process. It is passed to the `infer_func` method
+        along with the model to obtain detection results
+        :return: a list of dictionaries, where each dictionary represents an element detected in the
+        input image(s) and contains information such as the element's name (e.g. "image", "table",
+        "heading"), text (if applicable), and its position in the image(s). The elements are sorted by
+        their position and grouped into categories (e.g. headings, paragraphs, images) based on
         """
         #Prediction
-        detection_results = self.infer_func(source=inputs, model=self.model)
+        detection_results = []
+        for idx, img in enumerate(inputs):
+            detection_results += self.infer_func(source=img, model=self.model, idx=idx)
 
         #OCR                      
         parent_connections = []
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            for page_index, results in enumerate(detection_results):
-                for box in results.boxes:
-                    parent_conn, child_conn = mp.Pipe()
-                    parent_connections += [parent_conn]
-                            
-                    executor.submit(subprocess_ocr_request_aws, page_index, box,
-                                detection_results[page_index].orig_img[int(box.xyxy[0][1]): int(box.xyxy[0][3]), int(box.xyxy[0][0]): int(box.xyxy[0][2])],
-                                self.cfg.matpix_id, self.cfg.matpix_key,
-                                self.cfg.cloudinary_name, self.cfg.cloudinary_key, self.cfg.cloudinary_api_secret,
-                                child_conn)
+            for box in detection_results:
+                parent_conn, child_conn = mp.Pipe()
+                parent_connections += [parent_conn] 
+                executor.submit(subprocess_ocr_request_aws, box, self.cfg.matpix_id, self.cfg.matpix_key, self.cfg.cloudinary_name, self.cfg.cloudinary_key, self.cfg.cloudinary_api_secret, child_conn)
         elements = []
         for parent_connection in parent_connections:
             elements += [parent_connection.recv()]
@@ -357,13 +386,23 @@ class Detector(object):
             o, e = __combine_min_elements(o,e)
         return e
 
-
+    def __upload_file_s3(self, bucket_name, file):
+        file_name = time.strftime("%Y%m%d-%H%M%S") + "-" + str(random.randint(1000, 9999)) + ".png"
+        try:
+            self.s3.upload_fileobj(file, bucket_name, file_name) #upload to s3.
+            text = "http://{}.s3.amazonaws.com/{}".format(self.cfg.s3_bucket_name, file_name)
+            return text
+        except FileNotFoundError:
+            print("The file was not found")
+            return ""
+        except NoCredentialsError:
+            print("Credentials not available")
+            return ""
 
 
 ##########Manipulate with string
 def parse_choice2dict(text):
     items = [line.strip() for line in text.splitlines() if line.strip()] 
-    print(items)
     # results = {}
     results = []
 

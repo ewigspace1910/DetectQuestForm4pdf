@@ -9,3 +9,4 @@ pyMuPDF
 python-multipart
 boto3      #for s3 buckage 
 cloudinary #for cloud storage
+onnxruntime==1.12.0

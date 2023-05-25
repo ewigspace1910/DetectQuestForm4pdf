@@ -4,8 +4,8 @@ import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 
-from deploy.routers import router_analysis, DETECTOR
-# from routers import router_analysis, DETECTOR
+# from deploy.routers import router_analysis, DETECTOR
+from routers import router_analysis, DETECTOR
 
 app=FastAPI()
 
