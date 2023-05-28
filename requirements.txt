@@ -4,9 +4,7 @@ mangum
 uvicorn
 urllib3==1.25.11
 requests==2.23.0
-ultralytics==8.0.91
-pyMuPDF
+ultralytics
 python-multipart
-boto3      #for s3 buckage 
-cloudinary #for cloud storage
+boto3     
 onnxruntime==1.12.0

@@ -1,5 +1,5 @@
 #Thirst Library
-from ultralytics.yolo.engine.model import YOLO
+from ultralytics import YOLO
 import multiprocessing as mp
 import json
 import cv2
@@ -7,9 +7,8 @@ import io
 import requests
 import boto3
 import os
-import cloudinary
-import cloudinary.uploader as CryUploader
-from botocore.exceptions import NoCredentialsError
+from botocore import UNSIGNED
+from botocore.client import Config as AWSConfig
 import time
 import random
 import concurrent.futures
@@ -44,23 +43,16 @@ class Config:
         self.matpix_id = os.getenv("mathpix_id") 
         self.matpix_key = os.getenv("mathpix_key") 
 
-
         #storage
-        self.s3_id = ""
-        self.s3_key = ""
-        self.s3_bucket_name = ""
-
-        self.cloudinary_name = os.getenv("cloudinary_name") 
-        self.cloudinary_key = os.getenv("cloudinary_key") 
-        self.cloudinary_api_secret = os.getenv("cloudinary_api") 
-
-
-        #detection model
-        self.model_type = "yolov8"
-        self.weight_path = "deploy/model/yolov8x.pt"
+        # self.s3_id = os.getenv("s3id")
+        # self.s3_key = os.getenv("s3key")
+        self.s3_bucket_name = os.getenv("s3buckname")
 
         #parallel
-        self.n_processes = 2 #for aws
+        self.n_processes = os.getenv("nprocess") #for aws
+        #detection model
+        self.store_path =  os.getenv("wstore_path") #"deploy/model/yolov8x.pt"
+
 
 ################################################
 #               RESQUEST
@@ -69,7 +61,7 @@ def infer_yolov8(source, model):
     """
     source:  could be image, path,... 
     """
-    detection_results = model.predict(source, save=False, imgsz=(800, 800), conf=0.5, device="cpu")
+    detection_results = model.predict(source, save=False, imgsz=(640, 640), conf=0.5, device="cpu")
     return detection_results
 
 def request2mathpix(io_buffer, app_id="", app_key=""):
@@ -96,27 +88,16 @@ def request2mathpix(io_buffer, app_id="", app_key=""):
         print("Mathpix_ocr_requestion got error :", e)
         return "???"
 
-def request2cloudinary(file, name, key, api_secret):
-    try:
-        cloudinary.config(cloud_name = name, api_key = key, api_secret = api_secret, secure = True)
-        r = CryUploader.upload(file, format="png")
-        return r['url']
-    except Exception as e:
-        print("cloudary_error", e)
-        return ""
-
-def request2s3(s3, bucket_name, file, s3_bucket_name):
-    file_name = time.strftime("%Y%m%d-%H%M%S") + "-" + str(random.randint(1000, 9999)) + ".png"
-    try:
-        s3.upload_fileobj(file, bucket_name, file_name) #upload to s3.
-        text = "http://{}.s3.amazonaws.com/{}".format(s3_bucket_name, file_name)
-        return text
-    except FileNotFoundError:
-        print("The file was not found")
-        return ""
-    except NoCredentialsError:
-        print("Credentials not available")
-        return ""       
+def request2s3(file, s3name):
+        file_name = "image/" + time.strftime("%Y%m%d-%H%M%S") + "-" + str(random.randint(1000, 9999)) + ".png"
+        try:
+            s3 = boto3.client('s3', config=AWSConfig(signature_version=UNSIGNED))
+            s3.upload_fileobj(file, s3name, file_name) #upload to s3.
+            text = "https://{}.s3.amazonaws.com/{}".format(s3name, file_name)
+            return text
+        except Exception as e:
+            print("S3 error", e)
+            return ""   
 #########################################
 ### 
 ##       PIPELINE
@@ -127,7 +108,7 @@ def get_detector():
     return detector
 
 # @profile
-def subprocess_ocr_request(page_index, box, cropped_image, mathpix_id, mathpix_key, cry_name,  cry_key, cry_id):
+def subprocess_ocr_request_aws(page_index, box, cropped_image, mathpix_id, mathpix_key, s3name, conn):
     """
     "inputs" contains:
         page_index  : index of page containing box
@@ -140,32 +121,7 @@ def subprocess_ocr_request(page_index, box, cropped_image, mathpix_id, mathpix_k
     io_buffer = io.BytesIO(buffer)
     io_buffer.seek(0)
     if cls in ["image", "table"]: 
-        text = request2cloudinary(file=io_buffer, name=cry_name, key=cry_key, api_secret=cry_id)
-    else: 
-        text = request2mathpix(io_buffer=io_buffer, app_id=mathpix_id, app_key=mathpix_key)
-
-    obj = { "name":cls, 
-            "title": text,
-            "stimulus": "", #save image/table
-            "prompt" : "", #auxilary_text
-            "category": "OEQ",
-            "idx": (page_index, int(box.xyxy[0][1]))}
-    return obj
-  
-def subprocess_ocr_request_aws(page_index, box, cropped_image, mathpix_id, mathpix_key, cry_name,  cry_key, cry_id, conn):
-    """
-    "inputs" contains:
-        page_index  : index of page containing box
-        box         : detectedbox list from yolov8 results
-        cropped_image : (numpy array): original imaege
-        app_id, app_key
-    """
-    cls = REVERSE_MAP[int(box.cls)]
-    _, buffer = cv2.imencode(".png", cropped_image)
-    io_buffer = io.BytesIO(buffer)
-    io_buffer.seek(0)
-    if cls in ["image", "table"]: 
-        text = request2cloudinary(file=io_buffer, name=cry_name, key=cry_key, api_secret=cry_id)
+        text = request2s3(file=io_buffer, s3name=s3name)
     else: 
         text = request2mathpix(io_buffer=io_buffer, app_id=mathpix_id, app_key=mathpix_key)
 
@@ -183,46 +139,12 @@ def subprocess_ocr_request_aws(page_index, box, cropped_image, mathpix_id, mathp
 class Detector(object):
     def __init__(self, configs:Config):
         self.cfg = configs
-        self.s3 = boto3.client('s3', aws_access_key_id=self.cfg.s3_id, aws_secret_access_key=self.cfg.s3_key)
-
-        if self.cfg.model_type == "yolov8":
-            self.model = YOLO(self.cfg.weight_path)
-            self.infer_func = infer_yolov8
+        self.model = YOLO(self.cfg.store_path)
+        self.infer_func = infer_yolov8
     
     def ready(self):
         return str(type(self.model))
-
-    # @profile
-    def infer(self, inputs): 
-        """
-        This function takes inputs, performs object detection on them, extracts text from the detected
-        objects, and groups the extracted text into questions.
-        
-        :param inputs: The input data for the inference process. It is passed to the `infer_func` method
-        along with the model to obtain detection results
-        :return: a list of dictionaries, where each dictionary represents an element detected in the
-        input image(s) and contains information such as the element's name (e.g. "image", "table",
-        "heading"), text (if applicable), and its position in the image(s). The elements are sorted by
-        their position and grouped into categories (e.g. headings, paragraphs, images) based on
-        """
-        #DETECTION
-        detection_results = self.infer_func(source=inputs, model=self.model)
-
-        #OCR
-        elements = []
-        for page_index, result in enumerate(detection_results):
-            for box in result.boxes:
-                obj = subprocess_ocr_request(page_index, box,
-                            detection_results[page_index].orig_img[int(box.xyxy[0][1]): int(box.xyxy[0][3]), int(box.xyxy[0][0]): int(box.xyxy[0][2])],
-                            self.cfg.matpix_id, self.cfg.matpix_key,
-                            self.cfg.cloudinary_name, self.cfg.cloudinary_key, self.cfg.cloudinary_api_secret)
-                elements += [obj]
-
-        #Postprocessing
-        elements = sorted(elements, key=lambda x: x["idx"])  
-        questions = self.__group_element(elements)
-        return questions
-        
+   
     # @profile
     def infer_concurrent(self, inputs):
         """
@@ -243,8 +165,7 @@ class Detector(object):
                             
                     executor.submit(subprocess_ocr_request_aws, page_index, box,
                                 detection_results[page_index].orig_img[int(box.xyxy[0][1]): int(box.xyxy[0][3]), int(box.xyxy[0][0]): int(box.xyxy[0][2])],
-                                self.cfg.matpix_id, self.cfg.matpix_key,
-                                self.cfg.cloudinary_name, self.cfg.cloudinary_key, self.cfg.cloudinary_api_secret,
+                                self.cfg.matpix_id, self.cfg.matpix_key, self.cfg.s3_bucket_name,
                                 child_conn)
         elements = []
         for parent_connection in parent_connections:
@@ -318,7 +239,7 @@ class Detector(object):
                             if "subquestions" in elements[new_arr_e[i-1]].keys():
                                 elements[new_arr_e[i-1]]["subquestions"] += [ elements[j] ]
                             else: elements[new_arr_e[i-1]]["subquestions"] = [ elements[j] ]
-                            elements[new_arr_e[i-1]]["category"] = "SQ"
+                            elements[new_arr_e[i-1]]["category"] = "MSQ"
                         else: pass
                         # elements[new_arr_e[i-1]]["child"] += [ elements[j] ] 
                 i += 1
@@ -340,6 +261,7 @@ class Detector(object):
                     continue
                 elif i== len(elements) or CATEGORY_LEVEL[elements[i+1]['name']] != 0: continue
             
+            del item["idx"]
             orders += [order]
             new_elements += [item]
         
@@ -347,39 +269,29 @@ class Detector(object):
         if orders[0] < 3:
             orders = [3] + orders
             elements = [{"name":'heading', 
-                        "title": "Section - 1 ",
+                        "title": "Section - 1",
                         "stimulus": "", #save image/table
                         "prompt" : "", #auxilary_text
-                        "category": "SQ", 
-                        "idx": (0, 0)}] + elements
+                        "category": "MSQ"}] + elements
         o, e = orders, elements
         while len(set(o)) > 1:
             o, e = __combine_min_elements(o,e)
         return e
 
-
-
-
-##########Manipulate with string
+#########################################
+### 
+##       POSTPROCESSING
+###
+#########################################
 def parse_choice2dict(text):
     items = [line.strip() for line in text.splitlines() if line.strip()] 
-    print(items)
-    # results = {}
     results = []
 
     for item in items:
         match = re.match(r"\((\w+)\)\s*(\S+)", item)
 
         if match:
-            # key = match.group(1)
             value = match.group(2)
-            # results[key] = value
             results += [value]
-    return results
-
-
-if __name__ == "__main__":
-    cfg = Config()
-    d = Detector(cfg.model_type, weight_path=cfg.weight_path, configs=cfg) 
-    source = "../data/image"
-    print(d.infer(source))
+    if len(results) == 0 : return [text]
+    else: return results
