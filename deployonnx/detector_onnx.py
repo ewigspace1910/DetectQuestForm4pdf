@@ -221,26 +221,20 @@ class Detector(object):
             arr = orders
             idx_e = [i for i in range(len(elements))]
             order = min(orders)
-            
             #Group min elements in orders list : [2 0 0 3 0 1 0 0 1 0 3 2 0 1 0  ] -> [2, [0, 0], 3 [0], 1 [0, 0] 1 [0] 3 2 [0] 1 [0] ]
-            tmp = []
-            tmp_e = []
-            new_arr = []
-            new_arr_e =[]
+            tmp, tmp_e, new_arr, new_arr_e =[], [], [], []
             i = len(arr)-1
             while i >= 0:
                 if arr[i] > order:
                     new_arr = [arr[i], tmp] + new_arr if len(tmp) > 0 else [arr[i]] + new_arr
                     new_arr_e = [idx_e[i], tmp_e[::-1]] + new_arr_e if len(tmp_e) > 0 else [idx_e[i]] + new_arr_e
-                    tmp = []
-                    tmp_e = []
+                    tmp, tmp_e = [], []
                 else:
-                    tmp = [arr[i]]
+                    tmp += [arr[i]]
                     tmp_e += [idx_e[i]]
                 i -= 1
             #reduce array for [2, [0, 0], 3 [0], 1 [0, 0] 1 [0] 3 2 [0] 1 [0] ] -> [2, 3, 1, 1, 3, 2, 1]
-            new_arr_2 = []
-            new_arr_2_e = []
+            new_arr_2, new_arr_2_e = [], []
             i = 0
             while i < len(new_arr):
                 if type(new_arr[i]) == int:
@@ -248,7 +242,6 @@ class Detector(object):
                     new_arr_2_e += [new_arr_e[i]]
                 else:
                     for j in new_arr_e[i]:
-                        
                         if elements[j]["name"] in ("image", "table"):
                             elements[new_arr_e[i-1]]["stimulus"] += f"\n{elements[j]['title']}" 
                         elif elements[j]["name"] in ("auxillary_text") and len(elements[j]["title"]) > 5:
@@ -261,7 +254,6 @@ class Detector(object):
                         elif elements[j]["name"] in ("choice"):
                             if "choices" in elements[new_arr_e[i-1]].keys():
                                 elements[new_arr_e[i-1]]["choices"] += parse_choice2dict(elements[j]['title'])#f"\n{elements[j]['title']}"
-
                             else: elements[new_arr_e[i-1]]["choices"] = parse_choice2dict(elements[j]['title']) #f"\n{elements[j]['title']}"
                             elements[new_arr_e[i-1]]["category"] = "MCQ"
 
@@ -269,18 +261,15 @@ class Detector(object):
                             if "subquestions" in elements[new_arr_e[i-1]].keys():
                                 elements[new_arr_e[i-1]]["subquestions"] += [ elements[j] ]
                             else: elements[new_arr_e[i-1]]["subquestions"] = [ elements[j] ]
-                            elements[new_arr_e[i-1]]["category"] = "SQ"
-                        else: pass
-                        # elements[new_arr_e[i-1]]["child"] += [ elements[j] ] 
+                            elements[new_arr_e[i-1]]["category"] = "MSQ"
+                        else: pass 
                 i += 1
 
             new_arr_2_e = [elements[i] for i in new_arr_2_e]
-
             return new_arr_2, new_arr_2_e
         
         #######################
-        # orders = [CATEGORY_LEVEL[obj['name']] for obj in elements]
-        ## exclude unessesary headings --> example: 332211031032230212102 --> 3221101022302121102
+        ## exclude unessesary headings --> example: 3322110310322302121023 --> 3221101022302121102
         new_elements=[]
         orders   =[]
         for i, item in enumerate(elements):
@@ -289,21 +278,21 @@ class Detector(object):
                 if CATEGORY_LEVEL[elements[i-1]['name']] == 3:
                     elements[i-1]['prompt'] += f"\n{item['title'].strip()}"
                     continue
-                elif i== len(elements) or CATEGORY_LEVEL[elements[i+1]['name']] != 0: continue
+                elif i== len(elements)-1:continue
+                elif CATEGORY_LEVEL[elements[i+1]['name']] in [1, 2]: continue
             
             del item["idx"]
             orders += [order]
             new_elements += [item]
-        
         ## Grouping items
         if orders[0] < 3:
             orders = [3] + orders
-            elements = [{"name":'heading', 
+            new_elements = [{"name":'heading', 
                         "title": "Section - 1",
                         "stimulus": "", #save image/table
                         "prompt" : "", #auxilary_text
-                        "category": "MSQ"}] + elements
-        o, e = orders, elements
+                        "category": "MSQ"}] + new_elements
+        o, e = orders, new_elements
         while len(set(o)) > 1:
             o, e = __combine_min_elements(o,e)
         return e

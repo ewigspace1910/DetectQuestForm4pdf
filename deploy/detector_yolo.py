@@ -39,31 +39,32 @@ REVERSE_MAP = {CATEGORY_MAP[k]:k for k in CATEGORY_MAP}
 class Config:
     def __init__(self):
         
-        #matpix
+        #key-id
         self.matpix_id = os.getenv("mathpix_id") 
         self.matpix_key = os.getenv("mathpix_key") 
-
-        #storage
-        # self.s3_id = os.getenv("s3id")
-        # self.s3_key = os.getenv("s3key")
         self.s3_bucket_name = os.getenv("s3buckname")
 
-        #parallel
-        self.n_processes = os.getenv("nprocess") #for aws
         #detection model
         self.store_path =  os.getenv("wstore_path") #"deploy/model/yolov8x.pt"
-
+        self.cfg_path   =  os.getenv("cfg_path") #"deploy/model/yolov8x.pt"
+        #same args
+        self.threshold  = 0.5 if os.getenv("threshold") is None else os.getenv("threshold")
+        self.device     = "cpu" if os.getenv("device") is None else os.getenv("device")
+        self.n_processes = os.getenv("nprocess") #for aws
 
 ################################################
 #               RESQUEST
 #################################################
-def infer_yolov8(source, model):
+def infer_yolov8(thres, device):
     """
     source:  could be image, path,... 
     """
-    detection_results = model.predict(source, save=False, imgsz=(640, 640), conf=0.5, device="cpu")
-    return detection_results
+    def infer(source, model):
+        detection_results = model.predict(source, save=False, imgsz=(640, 640), conf=thres, device=device)
+        return detection_results
+    return infer
 
+################## REQUEST #####################
 def request2mathpix(io_buffer, app_id="", app_key=""):
     try:
         r = requests.post("https://api.mathpix.com/v3/text",
@@ -104,7 +105,7 @@ def request2s3(file, s3name):
 ###
 #########################################
 def get_detector():
-    detector = Detector(configs=Config())
+    detector = DetectorSJ(configs=Config())
     return detector
 
 # @profile
@@ -136,12 +137,14 @@ def subprocess_ocr_request_aws(page_index, box, cropped_image, mathpix_id, mathp
     conn.close()
 
 
-class Detector(object):
+class DetectorSJ(object):
     def __init__(self, configs:Config):
         self.cfg = configs
+
         self.model = YOLO(self.cfg.store_path)
-        self.infer_func = infer_yolov8
-    
+        self.infer_func = infer_yolov8(thres=self.cfg.threshold, device=self.cfg.device)
+
+    # predict from image
     def ready(self):
         return str(type(self.model))
    
@@ -191,26 +194,20 @@ class Detector(object):
             arr = orders
             idx_e = [i for i in range(len(elements))]
             order = min(orders)
-            
             #Group min elements in orders list : [2 0 0 3 0 1 0 0 1 0 3 2 0 1 0  ] -> [2, [0, 0], 3 [0], 1 [0, 0] 1 [0] 3 2 [0] 1 [0] ]
-            tmp = []
-            tmp_e = []
-            new_arr = []
-            new_arr_e =[]
+            tmp, tmp_e, new_arr, new_arr_e =[], [], [], []
             i = len(arr)-1
             while i >= 0:
                 if arr[i] > order:
                     new_arr = [arr[i], tmp] + new_arr if len(tmp) > 0 else [arr[i]] + new_arr
                     new_arr_e = [idx_e[i], tmp_e[::-1]] + new_arr_e if len(tmp_e) > 0 else [idx_e[i]] + new_arr_e
-                    tmp = []
-                    tmp_e = []
+                    tmp, tmp_e = [], []
                 else:
-                    tmp = [arr[i]]
+                    tmp += [arr[i]]
                     tmp_e += [idx_e[i]]
                 i -= 1
             #reduce array for [2, [0, 0], 3 [0], 1 [0, 0] 1 [0] 3 2 [0] 1 [0] ] -> [2, 3, 1, 1, 3, 2, 1]
-            new_arr_2 = []
-            new_arr_2_e = []
+            new_arr_2, new_arr_2_e = [], []
             i = 0
             while i < len(new_arr):
                 if type(new_arr[i]) == int:
@@ -218,7 +215,6 @@ class Detector(object):
                     new_arr_2_e += [new_arr_e[i]]
                 else:
                     for j in new_arr_e[i]:
-                        
                         if elements[j]["name"] in ("image", "table"):
                             elements[new_arr_e[i-1]]["stimulus"] += f"\n{elements[j]['title']}" 
                         elif elements[j]["name"] in ("auxillary_text") and len(elements[j]["title"]) > 5:
@@ -231,7 +227,6 @@ class Detector(object):
                         elif elements[j]["name"] in ("choice"):
                             if "choices" in elements[new_arr_e[i-1]].keys():
                                 elements[new_arr_e[i-1]]["choices"] += parse_choice2dict(elements[j]['title'])#f"\n{elements[j]['title']}"
-
                             else: elements[new_arr_e[i-1]]["choices"] = parse_choice2dict(elements[j]['title']) #f"\n{elements[j]['title']}"
                             elements[new_arr_e[i-1]]["category"] = "MCQ"
 
@@ -240,17 +235,14 @@ class Detector(object):
                                 elements[new_arr_e[i-1]]["subquestions"] += [ elements[j] ]
                             else: elements[new_arr_e[i-1]]["subquestions"] = [ elements[j] ]
                             elements[new_arr_e[i-1]]["category"] = "MSQ"
-                        else: pass
-                        # elements[new_arr_e[i-1]]["child"] += [ elements[j] ] 
+                        else: pass 
                 i += 1
 
             new_arr_2_e = [elements[i] for i in new_arr_2_e]
-
             return new_arr_2, new_arr_2_e
         
         #######################
-        # orders = [CATEGORY_LEVEL[obj['name']] for obj in elements]
-        ## exclude unessesary headings --> example: 332211031032230212102 --> 3221101022302121102
+        ## exclude unessesary headings --> example: 3322110310322302121023 --> 3221101022302121102
         new_elements=[]
         orders   =[]
         for i, item in enumerate(elements):
@@ -259,21 +251,21 @@ class Detector(object):
                 if CATEGORY_LEVEL[elements[i-1]['name']] == 3:
                     elements[i-1]['prompt'] += f"\n{item['title'].strip()}"
                     continue
-                elif i== len(elements) or CATEGORY_LEVEL[elements[i+1]['name']] != 0: continue
+                elif i== len(elements)-1:continue
+                elif CATEGORY_LEVEL[elements[i+1]['name']] in [1, 2]: continue
             
             del item["idx"]
             orders += [order]
             new_elements += [item]
-        
         ## Grouping items
         if orders[0] < 3:
             orders = [3] + orders
-            elements = [{"name":'heading', 
+            new_elements = [{"name":'heading', 
                         "title": "Section - 1",
                         "stimulus": "", #save image/table
                         "prompt" : "", #auxilary_text
-                        "category": "MSQ"}] + elements
-        o, e = orders, elements
+                        "category": "MSQ"}] + new_elements
+        o, e = orders, new_elements
         while len(set(o)) > 1:
             o, e = __combine_min_elements(o,e)
         return e

@@ -62,6 +62,6 @@ handler = Mangum(app)
 ###############################################################################
 #   Run the self contained application                                        #
 ###############################################################################
-import uvicorn
-if __name__ == '__main__':
-    uvicorn.run(app, host="localhost", port=9000)
+# import uvicorn
+# if __name__ == '__main__':
+#     uvicorn.run(app, host="localhost", port=9000)

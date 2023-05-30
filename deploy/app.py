@@ -8,12 +8,11 @@ from typing import List
 from PIL import Image
 import io
 
-# from deploy.routers import router_analysis, DETECTOR
-# from routers import router_analysis, DETECTOR
-# from deploy.detector_onnx import get_detector, CATEGORY_MAP
-from deploy.detector import get_detector
-# from detector import get_detector
-# from detector_onnx import get_detector
+
+# from deploy.detector_yolo import get_detector
+# from deploy.detector_paddle import get_detector
+from detector_paddle import get_detector
+
 
 app=FastAPI()
 DETECTOR=get_detector()
