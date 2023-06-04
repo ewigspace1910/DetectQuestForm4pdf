@@ -1,147 +1,26 @@
 #Thirst Library
 import multiprocessing as mp
-import json
 import cv2
-import io
-import requests
-import boto3
 import os
-from botocore import UNSIGNED
-from botocore.client import Config as AWSConfig
-import time
-import random
 import concurrent.futures
-import re
 import yaml
 import numpy as np
 import math
 from paddle.inference import Config as PPConfig
 from paddle.inference import create_predictor
 
-# CONSTANTs
-CATEGORY_MAP = {
-    "heading": 0, 
-    "question": 1,  
-    "subquestion": 2,
-    "choice"  : 3,
-    "image"   : 4,
-    "table"   : 5,
-    "blank"   : 6,
-    "auxillary_text"   : 7
-}
-CATEGORY_LEVEL = {
-    "heading": 3, 
-    "question": 2,  
-    "subquestion": 1,
-    "choice"  : 0,
-    "image"   : 0,
-    "table"   : 0,
-    "blank"   : 0,
-    "auxillary_text"   : 0
-}
-REVERSE_MAP = {CATEGORY_MAP[k]:k for k in CATEGORY_MAP}
-class Config:
-    def __init__(self):
-        
-        #key-id
-        self.matpix_id = os.getenv("mathpix_id") 
-        self.matpix_key = os.getenv("mathpix_key") 
-        self.s3_bucket_name = os.getenv("s3buckname")
 
-        #detection model
-        self.store_path =  "data/model/rt-dert" #os.getenv("wstore_path") 
-        self.cfg_path   =   "deploy/config.yaml" #os.getenv("cfg_path") 
-        #same args
-        self.threshold  = 0.5 if os.getenv("threshold") is None else os.getenv("threshold")
-        self.device     = "cpu" if os.getenv("device") is None else os.getenv("device")
-        self.n_processes = 2 #os.getenv("nprocess") #for aws
-
-################################################
-#               RESQUEST
-#################################################
-def infer_rtdert(source, model):
-    return model.predict_image(source)
-
-################## REQUEST #####################
-def request2mathpix(io_buffer, app_id="", app_key=""):
-    try:
-        r = requests.post("https://api.mathpix.com/v3/text",
-            files={"file": io_buffer},
-            data={
-            "options_json": json.dumps({
-                "math_inline_delimiters": ["$", "$"],
-                "rm_spaces": True
-            })
-            },
-            headers={
-                "app_id": app_id ,
-                "app_key":app_key 
-            }
-        )
-        r = r.json()
-        if "text" in r.keys():
-            return r['text'].strip()
-        else :
-            return ""
-    except Exception as e:
-        print("Mathpix_ocr_requestion got error :", e)
-        return "???"
-
-def request2s3(file, s3name):
-        file_name = "image/" + time.strftime("%Y%m%d-%H%M%S") + "-" + str(random.randint(1000, 9999)) + ".png"
-        try:
-            s3 = boto3.client('s3', config=AWSConfig(signature_version=UNSIGNED))
-            s3.upload_fileobj(file, s3name, file_name) #upload to s3.
-            text = "https://{}.s3.amazonaws.com/{}".format(s3name, file_name)
-            return text
-        except Exception as e:
-            print("S3 error", e)
-            return ""   
-#########################################
-### 
-##       PIPELINE
-###
-#########################################
-def get_detector():
-    detector = DetectorSJ(configs=Config())
-    return detector
-
-# @profile
-def subprocess_ocr_request(idx, cls, cropped_image, mathpix_id, mathpix_key, s3name, conn):
-    """
-    "inputs" contains:
-        box         : detectedbox list from paddle results
-        cropped_image : (numpy array): original imaege
-        app_id, app_key
-    """
-    cls = REVERSE_MAP[cls]
-    _, buffer = cv2.imencode(".png", cropped_image)
-    io_buffer = io.BytesIO(buffer)
-    io_buffer.seek(0)
-    if cls in ["image", "table"]: 
-        text = request2s3(file=io_buffer, s3name=s3name)
-    else: 
-        text = request2mathpix(io_buffer=io_buffer, app_id=mathpix_id, app_key=mathpix_key)
-
-    obj = { "name":cls, 
-            "title": str(idx),#text,
-            "stimulus": "", #save image/table
-            "prompt" : "", #auxilary_text
-            "category": "OEQ",
-            "idx": idx}
-    
-    conn.send(obj)
-    conn.close()
+from deploy.utils import Config, subprocess_ocr_request, group_element, REVERSE_MAP
+# from utils import Config, subprocess_ocr_request, group_element, REVERSE_MAP
 
 
 class DetectorSJ(object):
-    def __init__(self, configs:Config):
-        self.cfg = configs
-        self.infer_func = infer_rtdert 
-        if not os.path.isdir(self.cfg.store_path): raise f"{self.cfg.store_path} has to be folder contain  model.pdiparams, model.pdmodel"  
+    def __init__(self):
+        self.cfg = Config() 
         self.model = PaddleDectector(
             self.cfg.store_path,
             self.cfg.cfg_path,
+            batch_size = self.cfg.batchsize,
             device=self.cfg.device,
             cpu_threads=self.cfg.n_processes,
             threshold=self.cfg.threshold)
@@ -151,7 +30,7 @@ class DetectorSJ(object):
         return str(type(self.model))
    
     # @profile
-    def infer_concurrent(self, inputs):
+    def infer(self, inputs):
         """
         inputs: upload file from http requestion
 
@@ -159,7 +38,7 @@ class DetectorSJ(object):
         """
         #Prediction
         inputs = [np.array(i) for i in inputs]
-        detection_results = self.infer_func(source=inputs, model=self.model)
+        detection_results = self.model.predict_image(inputs)
 
         #OCR            
         parent_connections = []
@@ -167,7 +46,7 @@ class DetectorSJ(object):
             for box in detection_results:
                 parent_conn, child_conn = mp.Pipe()
                 parent_connections += [parent_conn]      
-                executor.submit(subprocess_ocr_request, (box['page_id'], box['xyxy'][1]), box['cls'],
+                executor.submit(subprocess_ocr_request, (box['page_id'], box['xyxy'][1]), REVERSE_MAP[box['cls']],
                             inputs[box['page_id']][box['xyxy'][1]: box['xyxy'][3], box['xyxy'][0]: box['xyxy'][2]],
                             self.cfg.matpix_id, self.cfg.matpix_key, self.cfg.s3_bucket_name,
                             child_conn)
@@ -177,118 +56,9 @@ class DetectorSJ(object):
 
         #Postprocesing
         elements = sorted(elements, key=lambda x: x["idx"])
-        questions = self.__group_element(elements)
+        questions = group_element(elements)
 
         return questions     
-
-    def __group_element(self, elements):
-        """Args:
-            - orders : (list[int])   Contain category_weights corresponding elements
-            - elements: (list[dict]) Contain all detected element in order from top to bottom of page, from page 0 to page n
-            Return: json object like html document object
-        """
-        def __combine_min_elements(orders, elements):
-            '''
-            order (list) --> rank of elements
-            elements (list) --> containing dictionary objects  contain information of question, must be containt key["child"] = []
-            '''
-            arr = orders
-            idx_e = [i for i in range(len(elements))]
-            order = min(orders)
-            #Group min elements in orders list : [2 0 0 3 0 1 0 0 1 0 3 2 0 1 0  ] -> [2, [0, 0], 3 [0], 1 [0, 0] 1 [0] 3 2 [0] 1 [0] ]
-            tmp, tmp_e, new_arr, new_arr_e =[], [], [], []
-            i = len(arr)-1
-            while i >= 0:
-                if arr[i] > order:
-                    new_arr = [arr[i], tmp] + new_arr if len(tmp) > 0 else [arr[i]] + new_arr
-                    new_arr_e = [idx_e[i], tmp_e[::-1]] + new_arr_e if len(tmp_e) > 0 else [idx_e[i]] + new_arr_e
-                    tmp, tmp_e = [], []
-                else:
-                    tmp += [arr[i]]
-                    tmp_e += [idx_e[i]]
-                i -= 1
-            #reduce array for [2, [0, 0], 3 [0], 1 [0, 0] 1 [0] 3 2 [0] 1 [0] ] -> [2, 3, 1, 1, 3, 2, 1]
-            new_arr_2, new_arr_2_e = [], []
-            i = 0
-            while i < len(new_arr):
-                if type(new_arr[i]) == int:
-                    new_arr_2 += [new_arr[i]]
-                    new_arr_2_e += [new_arr_e[i]]
-                else:
-                    for j in new_arr_e[i]:
-                        if elements[j]["name"] in ("image", "table"):
-                            elements[new_arr_e[i-1]]["stimulus"] += f"\n{elements[j]['title']}" 
-                        elif elements[j]["name"] in ("auxillary_text") and len(elements[j]["title"]) > 5:
-                            elements[new_arr_e[i-1]]["prompt"] += f"\n{elements[j]['title']}"
-
-                        elif elements[j]["name"] in ("blank") and len(elements[j]['title']) > 10:
-                            elements[new_arr_e[i-1]]["prompt"] += f"\n{elements[j]['title']}"
-                            # elements[new_arr_e[i-1]]["category"] = "OEQ"
-
-                        elif elements[j]["name"] in ("choice"):
-                            if "choices" in elements[new_arr_e[i-1]].keys():
-                                elements[new_arr_e[i-1]]["choices"] += parse_choice2dict(elements[j]['title'])#f"\n{elements[j]['title']}"
-                            else: elements[new_arr_e[i-1]]["choices"] = parse_choice2dict(elements[j]['title']) #f"\n{elements[j]['title']}"
-                            elements[new_arr_e[i-1]]["category"] = "MCQ"
-
-                        elif elements[j]["name"] in ("subquestion", "question"):
-                            if "subquestions" in elements[new_arr_e[i-1]].keys():
-                                elements[new_arr_e[i-1]]["subquestions"] += [ elements[j] ]
-                            else: elements[new_arr_e[i-1]]["subquestions"] = [ elements[j] ]
-                            elements[new_arr_e[i-1]]["category"] = "MSQ"
-                        else: pass 
-                i += 1
-
-            new_arr_2_e = [elements[i] for i in new_arr_2_e]
-            return new_arr_2, new_arr_2_e
-        
-        #######################
-        ## exclude unessesary headings --> example: 3322110310322302121023 --> 3221101022302121102
-        new_elements=[]
-        orders   =[]
-        for i, item in enumerate(elements):
-            order = CATEGORY_LEVEL[item['name']]
-            if order == 3 and i > 0:
-                if CATEGORY_LEVEL[elements[i-1]['name']] == 3:
-                    elements[i-1]['prompt'] += f"\n{item['title'].strip()}"
-                    continue
-                elif i== len(elements)-1:continue
-                elif CATEGORY_LEVEL[elements[i+1]['name']] in [1, 2]: continue
-            
-            del item["idx"]
-            orders += [order]
-            new_elements += [item]
-        ## Grouping items
-        if orders[0] < 3:
-            orders = [3] + orders
-            new_elements = [{"name":'heading', 
-                        "title": "Section - 1",
-                        "stimulus": "", #save image/table
-                        "prompt" : "", #auxilary_text
-                        "category": "MSQ"}] + new_elements
-        o, e = orders, new_elements
-        while len(set(o)) > 1:
-            o, e = __combine_min_elements(o,e)
-        return e
-
-#########################################
-### 
-##       POSTPROCESSING
-###
-#########################################
-def parse_choice2dict(text):
-    items = [line.strip() for line in text.splitlines() if line.strip()] 
-    results = []
-    return items
-    for item in items:
-        match = re.match(r"\((\w+)\)\s*(\S+)", item)
-
-        if match:
-            value = match.group(2)
-            results += [value]
-    if len(results) == 0 : return [text]
-    else: return results
-
 
 #########################################
 ### 
@@ -488,12 +258,13 @@ class PaddleDectector(object):
     def __init__(self,
                  model_dir,
                  cfg_path,
+                 batch_size=1,
                  device='CPU',
                  cpu_threads=2,
                  threshold=0.5,):
         self.pred_config = PredictConfig(cfg_path)
         self.predictor, self.config = load_predictor( model_dir,run_mode=self.pred_config.mode, device=device, cpu_threads=cpu_threads)
-        self.batch_size = self.pred_config.batch_size
+        self.batch_size = batch_size
         self.threshold = threshold
 
     def preprocess(self, image_list):
@@ -520,14 +291,6 @@ class PaddleDectector(object):
                 input_tensor.copy_from_cpu(inputs[input_names[i]])
 
         return inputs
-
-    # def postprocess(self, inputs, result):
-    #     # postprocess output of predictor
-    #     np_boxes_num = result['boxes_num']
-    #     assert isinstance(np_boxes_num, np.ndarray), '`np_boxes_num` should be a `numpy.ndarray`'
-
-    #     result = {k: v for k, v in result.items() if v is not None}
-    #     return result
 
     def predict(self):
         '''
@@ -656,7 +419,6 @@ class PredictConfig():
         self.mode = yml_conf['mode']
         self.preprocess_infos = yml_conf['Preprocess']
         self.labels = yml_conf['label_list']
-        self.batch_size = yml_conf["bs"]
 
 
 def load_predictor(model_dir,

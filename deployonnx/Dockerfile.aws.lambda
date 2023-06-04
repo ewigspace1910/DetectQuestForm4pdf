@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install ffmpeg libsm6 libxext6  -y
 #setup folder
 COPY ./deployonnx        ./deploy
 COPY ./deployonnx/app.py .
-
+COPY ./data/model/onnx-yolo8/yolov8x.onnx ./deploy/yolo.onnx
 # initialize environment
 RUN pip install awslambdaric
 COPY ./deployonnx/requirements.txt ./requirements.txt 

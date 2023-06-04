@@ -38,9 +38,8 @@ Below are the abridged JSONs of the most common quiz types we support. The "..."
 
 - Open ended question **(OEQ)**
 ```json
-{   "title": "Describe the color of the sky in two pictures below",
-    "stimulus": "\\https:pic1.png \n https:pic2.png",
-    "prompt"  : "Write your answer",
+{   "text": "Describe the color of the sky in two pictures below",
+    "stimulus": ["https:pic1.png", "https:pic2.png"],
     "category": "OEQ",
 }
 ```
@@ -48,9 +47,8 @@ Below are the abridged JSONs of the most common quiz types we support. The "..."
 
 - Multiple choice question **(MCQ)**
 ```json
-{   "title": "Choose the color of the sky in  picture below",
-    "stimulus": "\\https:pic1.png",
-    "prompt"  : "Just circle one answer",
+{   "text": "Choose the color of the sky in  picture below.Just circle one answer",
+    "stimulus": ["\\https:pic1.png"],
     "category": "MCQ",
     "choices" : ["yellow", "red", "blue", "purple"]
 }
@@ -58,9 +56,8 @@ Below are the abridged JSONs of the most common quiz types we support. The "..."
 
 - Multiple subquestion question **(MSQ)**
 ```json
-{   "title": "Question 10: Look at the picture",
-    "stimulus": "\\https:pic1.png",
-    "prompt"  : "Answer 3 questions:",
+{   "text": "Question 10: Look at the picture. Answer 3 questions:",
+    "stimulus": [],
     "category": "MSQ",
     "subquestions" : [
         {"category":"OEQ", "..."},
@@ -81,55 +78,42 @@ Below is a full sample of the JSON response that you might receive from our Quiz
   "layout": [
     {
       "name": "heading",
-      "title": "Section - 1 ",
-      "stimulus": "",
-      "prompt": "",
+      "text": "Section - 1 ",
+      "stimulus": [],
       "category": "SQ",
       "subquestions": [
         {
           "name": "question",
-          "title": "Lenny, John and Sam have 820 stickers altogether. Lenny has 55 more stickers than John. John has 4 times as many stickers as Sam. How many stickers does John have?",
-          "stimulus": "",
-          "prompt": "\n$\\checkmark$ Answer\n\\[\n340\n\\]",
-          "category": "OEQ",
-          "idx": [
-            1,
-            208
-          ]
+          "text": "Lenny, John and Sam have 820 stickers altogether. Lenny has 55 more stickers than John. John has 4 times as many stickers as Sam. How many stickers does John have?",
+          "stimulus": [],
+          "category": "OEQ"
         },
         {
           "name": "question",
-          "title": "2. Jason spent $\\$ 70$ in 5 days. Each day, he spent $\\$ 3$ more than the day before. How much did he spend on the last day",
-          "stimulus": "",
-          "prompt": "\n$\\checkmark$ Answer\n\\[\n\\$ 20\n\\]",
+          "text": "2. Jason spent $\\$ 70$ in 5 days. Each day, he spent $\\$ 3$ more than the day before. How much did he spend on the last day",
+          "stimulus": [],
           "category": "OEQ",
         },
         {
           "name": "question",
-          "title": "5. The figure shows 2 overlapping identical squares (not drawn to scale). $\\frac{2}{5}$ of each square is shaded. What is the ratio of the shaded area to the unshaded area of the figure? Express your answer in its simplest form.",
-          "stimulus": "\nhttp://res.cloudinary.com/ddx6w9r4o/image/upload/v1684981517/b3g08obuyuosl7iqn4nw.png",
-          "prompt": "\n$\\checkmark$ Answer\n\\[\n2: 6\n\\]",
+          "text": "5. The figure shows 2 overlapping identical squares (not drawn to scale). $\\frac{2}{5}$ of each square is shaded. What is the ratio of the shaded area to the unshaded area of the figure? Express your answer in its simplest form.",
+          "stimulus": ["http://res.cloudinary.com/ddx6w9r4o/image/upload/v1684981517/b3g08obuyuosl7iqn4nw.png"],
           "category": "OEQ",
         },
         {
           "name": "question",
-          "title": "11. Sinda had a roll of ribbon. She cut the ribbon into shorter pieces of different lengths. When she arranged the shorter pieces o ribbons in ascending order of their lengths, the difference in length between any 2 consecutive pieces was $1.35 \\mathrm{~cm}$.",
-          "stimulus": "",
-          "prompt": "",
+          "text": "11. Sinda had a roll of ribbon. She cut the ribbon into shorter pieces of different lengths. When she arranged the shorter pieces o ribbons in ascending order of their lengths, the difference in length between any 2 consecutive pieces was $1.35 \\mathrm{~cm}$.",
+          "stimulus" : []
           "category": "SQ",
           "subquestions": [
             {
               "name": "subquestion",
-              "title": "(a) The length of the third shortest piece of ribbon was $4.45 \\mathrm{~cm}$. What was the total length of the first 5 pieces of ribbon, starting from the shortest piece? Give your answer in centimetre.",
-              "stimulus": "",
-              "prompt": "\n$\\checkmark$ Answer\n\\[\n22.25 \\mathrm{~cm}\n\\]",
+              "text": "(a) The length of the third shortest piece of ribbon was $4.45 \\mathrm{~cm}$. What was the total length of the first 5 pieces of ribbon, starting from the shortest piece? Give your answer in centimetre.",
               "category": "OEQ",
             },
             {
               "name": "subquestion",
-              "title": "(b) The difference in length between the shortest piece of ribbon and the longest piece of ribbon was $2.16 \\mathrm{~m}$. How many pieces of ribbons did Sinda cut?",
-              "stimulus": "",
-              "prompt": "\n$\\checkmark$ Answer\n\\[\n161\n\\]",
+              "text": "(b) The difference in length between the shortest piece of ribbon and the longest piece of ribbon was $2.16 \\mathrm{~m}$. How many pieces of ribbons did Sinda cut?",
               "category": "OEQ",
             }
           ]

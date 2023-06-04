@@ -1,5 +1,4 @@
 mode: paddle
-bs: 1
 draw_threshold: 0.5
 metric: COCO
 use_dynamic_shape: false

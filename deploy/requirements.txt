@@ -2,16 +2,19 @@ numpy==1.24.3
 fastapi
 mangum
 uvicorn
+Pillow==9.5.0
 urllib3==1.25.11
 requests==2.23.0
 opencv-python==4.7.0.72
-ultralytics
+# ultralytics
 python-multipart
 boto3     
-onnxruntime==1.12.0
-
 
 ########for padde
 paddlepaddle==2.4.2
 PyYAML==6.0
 scipy==1.10.1
+
+########for pandoc
+beautifulsoup4==4.12.2
+mammoth==1.6.0

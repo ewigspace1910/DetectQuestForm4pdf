@@ -51,7 +51,7 @@ class Config:
         self.n_processes = os.getenv("nprocess") #for aws
         #detection model
         self.store_path = os.getenv("wstore_path")#""deployonnx/model/yolov8x.onnx""
-
+        self.threshold  = 0.5 if os.getenv("threshold") is None else float(os.getenv("threshold"))
 ################################################
 #               RESQUEST
 #################################################
@@ -188,7 +188,7 @@ class Detector(object):
         #Prediction
         detection_results = []
         for idx, img in enumerate(inputs):
-            detection_results += self.infer_func(source=img, model=self.model, idx=idx)
+            detection_results += self.infer_func(source=img, model=self.model, idx=idx, confidence=self.cfg.threshold)
 
         #OCR                      
         parent_connections = []
@@ -285,6 +285,7 @@ class Detector(object):
             orders += [order]
             new_elements += [item]
         ## Grouping items
+        if len(orders) == 0 : return []
         if orders[0] < 3:
             orders = [3] + orders
             new_elements = [{"name":'heading', 
