@@ -9,6 +9,8 @@ import random
 import boto3
 from botocore import UNSIGNED
 from botocore.client import Config as AWSConfig
+import multiprocessing as mp
+import concurrent.futures
 
 # CONSTANTs
 CATEGORY_MAP = {
@@ -41,6 +43,8 @@ class Config:
         self.s3_bucket_name = os.getenv("aws_s3_buckname")
 
         #detection model
+        # self.store_path =  "data/model/rt-dert" #os.getenv("path_weight_store") 
+        # self.cfg_path   =   "data/model/rt-dert/infer_cfg.yml" #os.getenv("path_model_cfg") 
         self.store_path =  os.getenv("path_weight_store") 
         self.cfg_path   =   os.getenv("path_model_cfg") 
         #same args
@@ -48,6 +52,9 @@ class Config:
         self.device     = "cpu" if os.getenv("infer_device") is None else os.getenv("infer_device")
         self.n_processes = 1  if os.getenv("infer_n_process") is None else int(os.getenv("infer_n_process")) #for aws
         self.batchsize  = 1  if os.getenv("infer_batchsize") is None else int(os.getenv("infer_batchsize")) #for aws
+
+        self.ocr_req_deplay = 10 if os.getenv("mathpix_delay") is None else int(os.getenv("mathpix_delay"))
+        self.ocr_req_max = 20 if os.getenv("mathpix_max_req_per_min") is None else int(os.getenv("mathpix_max_req_per_min"))
 
 ################## REQUEST #####################
 def request2mathpix(io_buffer, app_id="", app_key=""):
@@ -109,6 +116,33 @@ def subprocess_ocr_request(index, cls, cropped_image, mathpix_id, mathpix_key, s
     
     conn.send(obj)
     conn.close()
+
+def submit_ocr_request(detection_results,  config:Config):
+    """
+    This function submits OCR requests for detected text boxes using Mathpix OCR API and returns the OCR
+    results.
+    
+    :param detection_results: A list of tuples containing the page index, class label, and cropped image
+    of detected objects in a document
+    :param config: The `config` parameter is an instance of the `Config` class, which contains various
+    configuration settings for the OCR request process
+    :type config: Config
+    :return: a list of OCR results for each box in the detection results.
+    """
+    parent_connections = []
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        mathpix_requests=0
+        for box in detection_results: #box = [page_index (tuple), cls(str), cropped_image(np.narray)]
+            if not box[1] in ["image", "table"]:
+                mathpix_requests += 1
+                if mathpix_requests % config.ocr_req_max == 0: time.sleep(config.ocr_req_deplay)
+            parent_conn, child_conn = mp.Pipe()
+            parent_connections += [parent_conn]      
+            executor.submit(subprocess_ocr_request, box[0], box[1], box[2], config.matpix_id, config.matpix_key, config.s3_bucket_name, child_conn)
+    elements = []
+    for parent_connection in parent_connections:
+        elements += [parent_connection.recv()]
+    return elements
 
 
 def group_element(elements):

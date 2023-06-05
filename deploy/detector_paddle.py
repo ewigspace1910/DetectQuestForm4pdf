@@ -8,15 +8,16 @@ import numpy as np
 import math
 from paddle.inference import Config as PPConfig
 from paddle.inference import create_predictor
+import time
 
 
-from deploy.utils import Config, subprocess_ocr_request, group_element, REVERSE_MAP
-# from utils import Config, subprocess_ocr_request, group_element, REVERSE_MAP
+from deploy.utils import Config, subprocess_ocr_request, submit_ocr_request, group_element, REVERSE_MAP
+# from utils import Config, subprocess_ocr_request, submit_ocr_request, group_element, REVERSE_MAP
 
 
 class DetectorSJ(object):
     def __init__(self):
-        self.cfg = Config() 
+        self.cfg:Config  = Config() 
         self.model = PaddleDectector(
             self.cfg.store_path,
             self.cfg.cfg_path,
@@ -41,18 +42,22 @@ class DetectorSJ(object):
         detection_results = self.model.predict_image(inputs)
 
         #OCR            
-        parent_connections = []
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            for box in detection_results:
-                parent_conn, child_conn = mp.Pipe()
-                parent_connections += [parent_conn]      
-                executor.submit(subprocess_ocr_request, (box['page_id'], box['xyxy'][1]), REVERSE_MAP[box['cls']],
-                            inputs[box['page_id']][box['xyxy'][1]: box['xyxy'][3], box['xyxy'][0]: box['xyxy'][2]],
-                            self.cfg.matpix_id, self.cfg.matpix_key, self.cfg.s3_bucket_name,
-                            child_conn)
-        elements = []
-        for parent_connection in parent_connections:
-            elements += [parent_connection.recv()]
+        # parent_connections = []
+        # with concurrent.futures.ThreadPoolExecutor() as executor:
+        #     for box in detection_results:
+        #         parent_conn, child_conn = mp.Pipe()
+        #         parent_connections += [parent_conn]      
+        #         executor.submit(subprocess_ocr_request, (box['page_id'], box['xyxy'][1]), REVERSE_MAP[box['cls']],
+        #                     inputs[box['page_id']][box['xyxy'][1]: box['xyxy'][3], box['xyxy'][0]: box['xyxy'][2]],
+        #                     self.cfg.matpix_id, self.cfg.matpix_key, self.cfg.s3_bucket_name,
+        #                     child_conn)
+        # elements = []
+        # for parent_connection in parent_connections:
+        #     elements += [parent_connection.recv()]
+        elements = submit_ocr_request(detection_results=[[(box['page_id'], box['xyxy'][1]), REVERSE_MAP[box['cls']],
+                                                inputs[box['page_id']][box['xyxy'][1]: box['xyxy'][3], box['xyxy'][0]: box['xyxy'][2]] ]
+                                                for box in detection_results],
+                                      config=self.cfg)
 
         #Postprocesing
         elements = sorted(elements, key=lambda x: x["idx"])
