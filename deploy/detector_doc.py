@@ -36,10 +36,10 @@ CATEGORY_LEVEL = {
     "question": 4,  
     "subquestion": 3,
     "choice"  : 1,
-    "image"   : 2,
-    "table"   : 2,
+    "image"   : 1,
+    "table"   : 1,
     "blank"   : 1,
-    "auxillary_text"   : 0
+    "auxillary_text"   : 1
 }
 REVERSE_MAP = {CATEGORY_MAP[k]:k for k in CATEGORY_MAP}
 
@@ -60,7 +60,7 @@ def match_patter(idx, line, pattern, category=None, remove=None, minlen=0):
     """
     matches = re.findall(pattern, line)
     obj = None
-    if len(matches) > 0 and len(matches[0].split()) > minlen:
+    if len(matches) > 0 and len(matches[0]) - matches[0].count(" ")> minlen:
         text = matches[0]
         if (text.count("_") + text.count(".")) / (len(text)-text.count(" ")) > 0.75: cgy = "blank"
         else: cgy = category
@@ -86,10 +86,10 @@ def classify_text( index, line):
     obj = match_patter(index, line, regex_dict[0][0], category=regex_dict[0][1], remove="\*")
     if obj is None:
     #find question
-        obj = match_patter(index, line, regex_dict[1][0], category=regex_dict[1][1], minlen=3)
+        obj = match_patter(index, line, regex_dict[1][0], category=regex_dict[1][1], minlen=6)
         if obj is None:
             #find subquestion
-            obj = match_patter(index, line, regex_dict[2][0], category=regex_dict[2][1], minlen=3)
+            obj = match_patter(index, line, regex_dict[2][0], category=regex_dict[2][1], minlen=6)
             if obj is None:
                 #find choices
                 obj = match_patter(index, line, regex_dict[3][0], category=regex_dict[3][1])
@@ -159,7 +159,7 @@ def group_element(elements):
                         else: elements[new_arr_e[i-1]]["stimulus"] = [elements[j]['text']]
                     
                     elif elements[j]["name"] in ("auxillary_text", "blank") and len(elements[j]["text"]) > 6:
-                        elements[new_arr_e[i-1]]["text"] += f" {elements[j]['text']}"
+                        elements[new_arr_e[i-1]]["text"] += f"\n{elements[j]['text']}" if elements[j]["name"] == "blank" else f" {elements[j]['text']}"
 
                     elif elements[j]["name"] in ("choice"):
                         if "choices" in elements[new_arr_e[i-1]].keys():
@@ -186,13 +186,13 @@ def group_element(elements):
         item = {'name':item[-1], 'text':item[-2], 'category': "OEQ"}
         if item["name"] == "heading" and i > 0:
             if new_elements[-1]["name"] == "heading":
-                new_elements[-1]["text"] += f" \n{item['text']}"
+                new_elements[-1]["text"] += f" {item['text']}"
                 continue
             elif i== len(elements)-1:continue
             elif elements[i+1][-1] in ["subquestion"]: continue
 
-        if item["name"] == "auxillary_text" and i > 0 and CATEGORY_LEVEL[elements[i-1][-1]] == 1 and len(item['text'].split()) > 5: #hard rule
-            if i < len(elements) - 1 and CATEGORY_LEVEL[elements[i+1][-1]] == 1:
+        if item["name"] == "auxillary_text" and i > 0 and elements[i-1][-1] in ["choice", "blank"]: 
+            if i < len(elements) - 1 and elements[i+1][-1] in ["choice", "blank", "subquestion"]:
                     item["name"]="question" #after choice/blank/subquestion ---> question
             else: item["name"]="heading" #after question/heading ---> heading
     
