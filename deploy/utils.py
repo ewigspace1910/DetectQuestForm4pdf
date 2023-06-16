@@ -63,7 +63,7 @@ def request2mathpix(io_buffer, app_id="", app_key=""):
             files={"file": io_buffer},
             data={
             "options_json": json.dumps({
-                "math_inline_delimiters": ["$", "$"],
+                "math_inline_delimiters": ['<span class="math-tex" id="0">\(', "\)</span>"],
                 "rm_spaces": True
             })
             },
@@ -241,10 +241,10 @@ def parse_choice2dict(text):
     results = []
 
     for item in items:
-        match = re.match(r"\((\w+)\)\s*(\S+)", item)
+        match = re.match(r"\(\w+\)\s*(.+)", item)
 
         if match:
-            value = match.group(2)
+            value = match.group(1)
             results += [value]
     if len(results) == 0 : return items
     else: return results
